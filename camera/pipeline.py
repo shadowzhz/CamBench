@@ -53,6 +53,11 @@ def _jpeg_decoder():
 
 
 
+def has_accelerated_jpeg_decoder():
+    return _jpeg_decoder() != "jpegdec"
+
+
+
 def build_gstreamer_pipeline(device, mode, use_io_mode=True):
     fmt = normalize_format(mode.pixel_format)
     decoder = f"jpegparse ! {_jpeg_decoder()} ! " if fmt == "MJPG" else ""
