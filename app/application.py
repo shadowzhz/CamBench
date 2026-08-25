@@ -61,6 +61,8 @@ class CameraFpsApp:
 
         self.preview_image=None
 
+        self._closed=False
+
 
         self.build_ui()
 
@@ -90,7 +92,6 @@ class CameraFpsApp:
             1,
             weight=1
         )
-
 
         self.root.rowconfigure(
             0,
@@ -248,7 +249,6 @@ class CameraFpsApp:
             self.camera_combo.current()
         ]
 
-
         mode=camera.modes[
             self.mode_combo.current()
         ]
@@ -291,6 +291,11 @@ class CameraFpsApp:
 
     def process_events(self):
 
+        if self._closed:
+            return
+
+        latest_frame=None
+        latest_stats=None
 
         try:
 
@@ -301,21 +306,13 @@ class CameraFpsApp:
 
                 if event.type==EventType.FRAME:
 
-                    self.show_frame(
-                        event.data["frame"]
-                    )
-
-
-                    self.update_stats(
-                        event.data["stats"]
-                    )
+                    latest_frame=event.data["frame"]
+                    latest_stats=event.data["stats"]
 
 
                 elif event.type==EventType.STATS:
 
-                    self.update_stats(
-                        event.data
-                    )
+                    latest_stats=event.data
 
 
                 elif event.type==EventType.ERROR:
@@ -330,6 +327,12 @@ class CameraFpsApp:
 
             pass
 
+
+        if latest_frame is not None:
+            self.show_frame(latest_frame)
+
+        if latest_stats is not None:
+            self.update_stats(latest_stats)
 
 
         self.root.after(
@@ -346,16 +349,40 @@ class CameraFpsApp:
             cv2.COLOR_BGR2RGB
         )
 
+        # Tk 主线程不应反复编码完整分辨率帧；预览只需要缩放到窗口大小。
+        max_width=max(self.preview.winfo_width(), 1)
+        max_height=max(self.preview.winfo_height(), 1)
+
+        height,width=frame.shape[:2]
+        scale=min(
+            max_width/width,
+            max_height/height,
+            1.0
+        )
+
+        if scale < 1.0:
+            frame=cv2.resize(
+                frame,
+                (
+                    max(1, int(width*scale)),
+                    max(1, int(height*scale))
+                ),
+                interpolation=cv2.INTER_AREA
+            )
+
+        ok, encoded=cv2.imencode(
+            ".png",
+            frame
+        )
+
+        if not ok:
+            return
 
         image=tk.PhotoImage(
             data=base64.b64encode(
-                cv2.imencode(
-                    ".png",
-                    frame
-                )[1]
+                encoded
             )
         )
-
 
         self.preview_image=image
 
@@ -379,7 +406,9 @@ class CameraFpsApp:
 
     def close(self):
 
-        self.stop_camera()
+        if self._closed:
+            return
 
+        self._closed=True
+        self.stop_camera()
         self.root.destroy()
-        
