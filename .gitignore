@@ -1,0 +1,110 @@
+# =========================
+# Python
+# =========================
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# virtual environment
+.venv/
+venv/
+env/
+
+# pip
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+
+# pytest
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+
+# coverage
+.coverage
+htmlcov/
+
+
+# =========================
+# IDE
+# =========================
+
+.vscode/
+.idea/
+
+*.swp
+*.swo
+
+
+# =========================
+# Runtime
+# =========================
+
+# logs
+*.log
+logs/
+
+# temporary files
+*.tmp
+*.temp
+
+# cache
+.cache/
+
+
+# =========================
+# Application
+# =========================
+
+# generated screenshots
+captures/
+screenshots/
+
+# recordings
+videos/
+*.mp4
+*.avi
+*.mkv
+
+# runtime config
+config.local.yaml
+config.local.json
+
+
+# =========================
+# OS
+# =========================
+
+.DS_Store
+Thumbs.db
+
+
+# =========================
+# Jetson / Linux
+# =========================
+
+# build files
+build/
+dist/
+
+# backup files
+*.bak
+*~
+
+
+# =========================
+# Test output
+# =========================
+
+test_output/
+benchmark_results/
+
+
+# =========================
+# Environment
+# =========================
+
+.env
+.env.*
