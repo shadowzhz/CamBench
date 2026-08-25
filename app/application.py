@@ -129,6 +129,10 @@ class CameraFpsApp:
             state="readonly"
         )
 
+        self.camera_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self.on_camera_selected()
+        )
 
         self.camera_combo.pack(
             fill="x",
@@ -232,6 +236,8 @@ class CameraFpsApp:
         if camera.modes:
 
             self.mode_combo.current(0)
+        else:
+            self.mode_combo.set("")
 
 
 
