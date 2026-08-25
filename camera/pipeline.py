@@ -41,9 +41,13 @@ def _build_caps(mode):
 
 
 def build_gstreamer_pipeline(device, mode, use_io_mode=True):
+    fmt = normalize_format(mode.pixel_format)
+    decoder = "jpegparse ! jpegdec ! " if fmt == "MJPG" else ""
+
     return (
         f"{_build_source(device, use_io_mode)}! "
         f"{_build_caps(mode)} ! "
+        f"{decoder}"
         "videoconvert ! video/x-raw,format=BGR ! "
         "appsink drop=true max-buffers=1 sync=false"
     )
@@ -51,9 +55,13 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
 
 
 def build_counter_pipeline(device, mode, use_io_mode=True):
+    fmt = normalize_format(mode.pixel_format)
+    decoder = "jpegparse ! jpegdec ! " if fmt == "MJPG" else ""
+
     return (
         f"{_build_source(device, use_io_mode)}! "
         f"{_build_caps(mode)} ! "
+        f"{decoder}"
         "fakesink name=sink sync=false"
     )
 
