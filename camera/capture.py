@@ -2,7 +2,10 @@ import time
 
 import cv2
 
-from camera.pipeline import build_gstreamer_pipeline
+from camera.pipeline import (
+    build_gstreamer_pipeline,
+    has_accelerated_jpeg_decoder,
+)
 from camera.utils import normalize_format
 
 
@@ -127,17 +130,22 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
 
 def open_capture(camera, mode, stop_event=None):
     errors = []
+    fmt = normalize_format(mode.pixel_format)
+
+    # 高帧率 MJPG 优先使用系统已有的硬件 JPEG 解码器；如果没有，
+    # 继续走 OpenCV V4L2，避免无条件切换到更慢的软件 GStreamer 解码。
+    if fmt == "MJPG" and mode.fps >= 60 and has_accelerated_jpeg_decoder():
+        result = open_gstreamer_capture(camera, mode, errors, stop_event)
+        if result[0]:
+            return (*result, errors)
 
     # V4L2 直接打开优先。部分笔记本内置摄像头对 GStreamer
     # 的 v4l2src 协商不稳定，但 OpenCV 的 V4L2 backend 可以正常取帧。
-    # 如果驱动没有真正接受请求的 FPS/分辨率，则放弃该结果，避免
-    # 把实际 30 FPS 当成 120/200 FPS 返回。
     result = open_v4l2_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
 
-    # V4L2 无法取帧或没有真正协商到目标模式时再使用 GStreamer。
-    # GStreamer 管线会把枚举到的 FPS 直接写入 caps，适合高 FPS MJPG。
+    # V4L2 无法取帧时再使用 GStreamer。
     result = open_gstreamer_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
