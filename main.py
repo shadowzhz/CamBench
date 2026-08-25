@@ -17,11 +17,13 @@ def main():
 
     app = CameraFpsApp(root)
 
-    root.mainloop()
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        app.close()
 
 
 
 if __name__ == "__main__":
 
     main()
-    
