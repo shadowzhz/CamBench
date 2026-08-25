@@ -2,8 +2,6 @@ import time
 
 import cv2
 
-from core.logger import log
-
 from camera.pipeline import build_gstreamer_pipeline
 from camera.utils import normalize_format
 
@@ -14,13 +12,40 @@ def read_first_frame(cap, attempts=10, stop_event=None):
         if stop_event and stop_event.is_set():
             return None
 
-        ok, frame = cap.read()
+        try:
+            ok, frame = cap.read()
+        except Exception:
+            return None
+
         if ok and frame is not None:
             return frame
 
         time.sleep(0.03)
 
     return None
+
+
+
+def configure_v4l2(cap, mode):
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    formats = [
+        normalize_format(mode.pixel_format),
+        "MJPG",
+        "YUYV",
+    ]
+
+    for fmt in formats:
+        if fmt in ("MJPG", "YUYV"):
+            cap.set(
+                cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter_fourcc(*fmt),
+            )
+            break
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, mode.width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, mode.height)
+    cap.set(cv2.CAP_PROP_FPS, mode.fps)
 
 
 
@@ -60,12 +85,7 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
             cap.release()
             continue
 
-        fourcc = "MJPG" if normalize_format(mode.pixel_format) == "MJPG" else "YUYV"
-
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, mode.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, mode.height)
-        cap.set(cv2.CAP_PROP_FPS, mode.fps)
+        configure_v4l2(cap, mode)
 
         frame = read_first_frame(cap, stop_event=stop_event)
 
