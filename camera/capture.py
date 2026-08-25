@@ -29,19 +29,12 @@ def read_first_frame(cap, attempts=10, stop_event=None):
 def configure_v4l2(cap, mode):
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    formats = [
-        normalize_format(mode.pixel_format),
-        "MJPG",
-        "YUYV",
-    ]
-
-    for fmt in formats:
-        if fmt in ("MJPG", "YUYV"):
-            cap.set(
-                cv2.CAP_PROP_FOURCC,
-                cv2.VideoWriter_fourcc(*fmt),
-            )
-            break
+    fmt = normalize_format(mode.pixel_format)
+    if fmt in ("MJPG", "YUYV"):
+        cap.set(
+            cv2.CAP_PROP_FOURCC,
+            cv2.VideoWriter_fourcc(*fmt),
+        )
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, mode.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, mode.height)
@@ -101,8 +94,7 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
 def open_capture(camera, mode, stop_event=None):
     errors = []
 
-    # Linux 环境优先使用 GStreamer，避免 OpenCV V4L2 后端在部分构建中
-    # 对设备名探测失败时产生无意义的 cap.cpp 警告；V4L2 作为兼容回退。
+    # Linux 环境优先使用 GStreamer，V4L2 作为兼容回退。
     result = open_gstreamer_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
