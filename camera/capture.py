@@ -24,7 +24,16 @@ def read_first_frame(cap, attempts=10, stop_event=None):
     return None
 
 
+def _close_enough(actual, requested):
+    if requested <= 0:
+        return True
+
+    tolerance = max(1.0, requested * 0.05)
+    return abs(actual - requested) <= tolerance
+
+
 def configure_v4l2(cap, mode):
+    """Apply a V4L2 mode and verify that the driver accepted it."""
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     fmt = normalize_format(mode.pixel_format)
@@ -37,6 +46,23 @@ def configure_v4l2(cap, mode):
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, mode.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, mode.height)
     cap.set(cv2.CAP_PROP_FPS, mode.fps)
+
+    actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    actual_fps = cap.get(cv2.CAP_PROP_FPS)
+
+    size_ok = (
+        int(round(actual_width)) == mode.width
+        and int(round(actual_height)) == mode.height
+    )
+    fps_ok = _close_enough(actual_fps, mode.fps)
+
+    return {
+        "width": actual_width,
+        "height": actual_height,
+        "fps": actual_fps,
+        "accepted": size_ok and fps_ok,
+    }
 
 
 def open_gstreamer_capture(camera, mode, errors, stop_event=None):
@@ -76,7 +102,17 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
             cap.release()
             continue
 
-        configure_v4l2(cap, mode)
+        negotiated = configure_v4l2(cap, mode)
+
+        if not negotiated["accepted"]:
+            errors.append(
+                f"OpenCV V4L2 {device}: mode rejected "
+                f"requested={mode.width}x{mode.height}@{mode.fps:.2f}, "
+                f"actual={negotiated['width']:.0f}x{negotiated['height']:.0f}"
+                f"@{negotiated['fps']:.2f}"
+            )
+            cap.release()
+            continue
 
         frame = read_first_frame(cap, stop_event=stop_event)
 
@@ -94,11 +130,14 @@ def open_capture(camera, mode, stop_event=None):
 
     # V4L2 直接打开优先。部分笔记本内置摄像头对 GStreamer
     # 的 v4l2src 协商不稳定，但 OpenCV 的 V4L2 backend 可以正常取帧。
+    # 如果驱动没有真正接受请求的 FPS/分辨率，则放弃该结果，避免
+    # 把实际 30 FPS 当成 120/200 FPS 返回。
     result = open_v4l2_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
 
-    # V4L2 无法取帧时再使用 GStreamer，兼容外接相机及特殊格式。
+    # V4L2 无法取帧或没有真正协商到目标模式时再使用 GStreamer。
+    # GStreamer 管线会把枚举到的 FPS 直接写入 caps，适合高 FPS MJPG。
     result = open_gstreamer_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
