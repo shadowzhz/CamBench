@@ -8,7 +8,6 @@ from camera.utils import normalize_format
 from camera.modes import fps_fraction
 
 
-
 def _build_source(device, use_io_mode=True):
     source = f"v4l2src device={device} do-timestamp=true "
     if use_io_mode:
@@ -16,52 +15,31 @@ def _build_source(device, use_io_mode=True):
     return source
 
 
-
 def _build_caps(mode):
     fps_num, fps_den = fps_fraction(mode.fps)
     fmt = normalize_format(mode.pixel_format)
-
     if fmt == "MJPG":
-        return (
-            f"image/jpeg,width={mode.width},height={mode.height},"
-            f"framerate={fps_num}/{fps_den}"
-        )
-
+        return f"image/jpeg,width={mode.width},height={mode.height},framerate={fps_num}/{fps_den}"
     if fmt in ("YUY2", "YUYV"):
-        return (
-            f"video/x-raw,format=YUY2,width={mode.width},"
-            f"height={mode.height},framerate={fps_num}/{fps_den}"
-        )
-
-    return (
-        f"video/x-raw,width={mode.width},height={mode.height},"
-        f"framerate={fps_num}/{fps_den}"
-    )
-
+        return f"video/x-raw,format=YUY2,width={mode.width},height={mode.height},framerate={fps_num}/{fps_den}"
+    return f"video/x-raw,width={mode.width},height={mode.height},framerate={fps_num}/{fps_den}"
 
 
 def _jpeg_decoder():
     """Prefer an installed accelerated JPEG decoder for high-FPS MJPG cameras."""
-    for name in (
-        "v4l2sljpegdec",
-        "nvjpegdec",
-        "vaapijpegdec",
-    ):
+    for name in ("v4l2sljpegdec", "nvjpegdec", "vaapijpegdec"):
         if Gst.ElementFactory.find(name) is not None:
             return name
     return "jpegdec"
-
 
 
 def has_accelerated_jpeg_decoder():
     return _jpeg_decoder() != "jpegdec"
 
 
-
 def build_gstreamer_pipeline(device, mode, use_io_mode=True):
     fmt = normalize_format(mode.pixel_format)
     decoder = f"jpegparse ! {_jpeg_decoder()} ! " if fmt == "MJPG" else ""
-
     return (
         f"{_build_source(device, use_io_mode)}! "
         f"{_build_caps(mode)} ! "
@@ -71,18 +49,13 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
     )
 
 
-
 def build_counter_pipeline(device, mode, use_io_mode=True):
-    fmt = normalize_format(mode.pixel_format)
-    decoder = f"jpegparse ! {_jpeg_decoder()} ! " if fmt == "MJPG" else ""
-
+    """Count buffers directly from v4l2src, without JPEG decode/conversion."""
     return (
         f"{_build_source(device, use_io_mode)}! "
         f"{_build_caps(mode)} ! "
-        f"{decoder}"
         "fakesink name=sink sync=false"
     )
-
 
 
 def close_counter_pipeline(pipeline, pad=None, probe_id=None):
@@ -91,7 +64,6 @@ def close_counter_pipeline(pipeline, pad=None, probe_id=None):
             pad.remove_probe(probe_id)
     except Exception:
         pass
-
     try:
         if pipeline:
             pipeline.set_state(Gst.State.NULL)
