@@ -46,18 +46,25 @@ class PreviewWorker(BaseWorker):
             return value.is_set()
         return bool(value)
 
-    def publish(self, frame, opened_device, backend, counter, timestamps, start_time):
-        now = time.perf_counter()
-        timestamps.append(now)
+    @staticmethod
+    def _realtime_fps(timestamps):
+        if len(timestamps) < 2:
+            return 0.0
+        elapsed = timestamps[-1] - timestamps[0]
+        if elapsed <= 0:
+            return 0.0
+        return (len(timestamps) - 1) / elapsed
 
-        while timestamps and now - timestamps[0] > 1:
-            timestamps.popleft()
-
-        realtime = 0
-        if len(timestamps) >= 2:
-            realtime = (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
-
-        elapsed = max(now - start_time, 0.001)
+    def publish(
+        self,
+        frame,
+        opened_device,
+        backend,
+        counter,
+        start_time,
+        capture_fps,
+    ):
+        elapsed = max(time.perf_counter() - start_time, 0.001)
         avg = counter / elapsed
 
         stats = {
@@ -68,7 +75,7 @@ class PreviewWorker(BaseWorker):
             "requested_size": f"{self.mode.width}x{self.mode.height}",
             "actual_size": f"{frame.shape[1]}x{frame.shape[0]}",
             "target_fps": f"{self.mode.fps:.2f}",
-            "realtime_fps": f"{realtime:.2f}",
+            "realtime_fps": f"{capture_fps:.2f}",
             "avg_fps": f"{avg:.2f}",
             "frames": str(counter),
             "elapsed": f"{elapsed:.1f}s",
@@ -96,12 +103,19 @@ class PreviewWorker(BaseWorker):
             counter = 0
             timestamps = deque(maxlen=PREVIEW_FPS_HISTORY_SIZE)
             start = time.perf_counter()
+            last_publish = 0.0
 
             if first is not None:
                 counter += 1
-                self.publish(first, device, backend, counter, timestamps, start)
-
-            last_publish = 0
+                timestamps.append(time.perf_counter())
+                self.publish(
+                    first,
+                    device,
+                    backend,
+                    counter,
+                    start,
+                    self._realtime_fps(timestamps),
+                )
 
             while not self.stopped():
                 ok, frame = cap.read()
@@ -113,6 +127,8 @@ class PreviewWorker(BaseWorker):
 
                 counter += 1
                 now = time.perf_counter()
+                timestamps.append(now)
+                capture_fps = self._realtime_fps(timestamps)
 
                 interval = (
                     1 / PREVIEW_UPDATE_FPS
@@ -122,7 +138,14 @@ class PreviewWorker(BaseWorker):
 
                 if now - last_publish >= interval:
                     last_publish = now
-                    self.publish(frame, device, backend, counter, timestamps, start)
+                    self.publish(
+                        frame,
+                        device,
+                        backend,
+                        counter,
+                        start,
+                        capture_fps,
+                    )
 
         finally:
             if cap:
