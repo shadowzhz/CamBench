@@ -40,6 +40,12 @@ class PreviewWorker(BaseWorker):
         except queue.Full:
             pass
 
+    def _preview_enabled(self):
+        value = self.preview_enabled
+        if hasattr(value, "is_set"):
+            return value.is_set()
+        return bool(value)
+
     def publish(self, frame, opened_device, backend, counter, timestamps, start_time):
         now = time.perf_counter()
         timestamps.append(now)
@@ -68,7 +74,7 @@ class PreviewWorker(BaseWorker):
             "elapsed": f"{elapsed:.1f}s",
         }
 
-        if self.preview_enabled.is_set():
+        if self._preview_enabled():
             self.put_event(make_frame_event(frame, stats))
         else:
             self.put_event(make_stats_event(stats))
@@ -110,7 +116,7 @@ class PreviewWorker(BaseWorker):
 
                 interval = (
                     1 / PREVIEW_UPDATE_FPS
-                    if self.preview_enabled.is_set()
+                    if self._preview_enabled()
                     else 1 / STATS_ONLY_UPDATE_FPS
                 )
 
