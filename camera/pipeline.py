@@ -40,9 +40,22 @@ def _build_caps(mode):
 
 
 
+def _jpeg_decoder():
+    """Prefer an installed accelerated JPEG decoder for high-FPS MJPG cameras."""
+    for name in (
+        "v4l2sljpegdec",
+        "nvjpegdec",
+        "vaapijpegdec",
+    ):
+        if Gst.ElementFactory.find(name) is not None:
+            return name
+    return "jpegdec"
+
+
+
 def build_gstreamer_pipeline(device, mode, use_io_mode=True):
     fmt = normalize_format(mode.pixel_format)
-    decoder = "jpegparse ! jpegdec ! " if fmt == "MJPG" else ""
+    decoder = f"jpegparse ! {_jpeg_decoder()} ! " if fmt == "MJPG" else ""
 
     return (
         f"{_build_source(device, use_io_mode)}! "
@@ -56,7 +69,7 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
 
 def build_counter_pipeline(device, mode, use_io_mode=True):
     fmt = normalize_format(mode.pixel_format)
-    decoder = "jpegparse ! jpegdec ! " if fmt == "MJPG" else ""
+    decoder = f"jpegparse ! {_jpeg_decoder()} ! " if fmt == "MJPG" else ""
 
     return (
         f"{_build_source(device, use_io_mode)}! "
