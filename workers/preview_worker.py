@@ -87,6 +87,16 @@ class PreviewWorker(BaseWorker):
         except Exception:
             return None
 
+    def _reset_source_stats(self):
+        resetter = getattr(self.cap, "reset_source_stats", None)
+        if resetter is None:
+            return False
+        try:
+            resetter()
+            return True
+        except Exception:
+            return False
+
     def run(self):
         cap = None
         try:
@@ -101,20 +111,15 @@ class PreviewWorker(BaseWorker):
             counter = 0
             capture_meter = FpsMeter(PREVIEW_FPS_HISTORY_SIZE)
             display_timestamps = deque(maxlen=PREVIEW_FPS_HISTORY_SIZE)
+
+            # 首帧只用于确认设备已经成功打开；正式 FPS 测试从此刻开始。
+            self._reset_source_stats()
+            capture_meter.reset()
             start = time.perf_counter()
-            last_publish = 0.0
+            last_publish = start
 
             if first is not None:
-                source_stats = self._source_stats()
-                now = time.perf_counter()
-                if source_stats is None:
-                    capture_meter.tick(now)
-                    counter = capture_meter.frames
-                    capture_fps = capture_meter.current_fps
-                else:
-                    counter, capture_fps = source_stats
-                self.publish(first, device, backend, counter, start,
-                             capture_fps, 0.0)
+                self.publish(first, device, backend, 0, start, 0.0, 0.0)
 
             while not self.stopped():
                 ok, frame = cap.read()
