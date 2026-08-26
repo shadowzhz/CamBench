@@ -9,9 +9,11 @@ from camera.modes import fps_fraction
 
 
 def _build_source(device, use_io_mode=True):
+    # Let v4l2src choose the transport mode. Forcing mmap (io-mode=2)
+    # can make otherwise valid high-FPS MJPG modes fail negotiation.
     source = f"v4l2src device={device} do-timestamp=true "
     if use_io_mode:
-        source += "io-mode=2 "
+        source += "io-mode=0 "
     return source
 
 
@@ -35,7 +37,7 @@ def _build_caps(mode):
 
 
 def _jpeg_decoder():
-    """Return an explicitly available JPEG decoder, or None for decodebin."""
+    """Return the best explicitly available JPEG decoder."""
     for name in (
         "v4l2sljpegdec",
         "nvjpegdec",
@@ -58,13 +60,13 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
 
     if fmt == "MJPG":
         if decoder:
-            decoder_chain = f"jpegparse ! {decoder} ! "
+            decoder_chain = f"jpegparse ! queue max-size-buffers=4 leaky=downstream ! {decoder} ! "
             print(f"GStreamer decoder={decoder}")
         else:
-            # decodebin lets GStreamer select any installed MJPEG/JPEG decoder
-            # instead of failing during pipeline construction.
-            decoder_chain = "jpegparse ! decodebin ! "
-            print("GStreamer decoder=decodebin")
+            # decodebin cannot be reliably linked in a static textual pipeline
+            # because its source pad is dynamic, so fail cleanly and let capture.py
+            # use its V4L2 fallback.
+            raise RuntimeError("GStreamer JPEG decoder is unavailable")
     else:
         decoder_chain = ""
 
