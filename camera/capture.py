@@ -6,7 +6,7 @@ from camera.pipeline import build_gstreamer_pipeline
 from camera.utils import normalize_format
 
 
-def read_first_frame(cap, attempts=10, stop_event=None):
+def read_first_frame(cap, attempts=30, stop_event=None):
     for _ in range(attempts):
         if stop_event and stop_event.is_set():
             return None
@@ -19,7 +19,7 @@ def read_first_frame(cap, attempts=10, stop_event=None):
         if ok and frame is not None:
             return frame
 
-        time.sleep(0.03)
+        time.sleep(0.01)
 
     return None
 
@@ -37,11 +37,8 @@ def configure_v4l2(cap, mode):
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     fmt = normalize_format(mode.pixel_format)
-    if fmt in ("MJPG", "YUYV"):
-        cap.set(
-            cv2.CAP_PROP_FOURCC,
-            cv2.VideoWriter_fourcc(*fmt),
-        )
+    if fmt in ("MJPG", "YUYV", "YUY2"):
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fmt))
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, mode.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, mode.height)
@@ -84,7 +81,8 @@ def open_gstreamer_capture(camera, mode, errors, stop_event=None):
             if frame is not None:
                 print(
                     f"capture backend=GStreamer device={device} "
-                    f"mode={mode.width}x{mode.height}@{mode.fps:g} {normalize_format(mode.pixel_format)}"
+                    f"mode={mode.width}x{mode.height}@{mode.fps:g} "
+                    f"{normalize_format(mode.pixel_format)}"
                 )
                 return cap, label, frame, device
 
@@ -121,6 +119,13 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
         frame = read_first_frame(cap, stop_event=stop_event)
 
         if frame is not None:
+            print(
+                f"capture backend=V4L2 device={device} "
+                f"mode={mode.width}x{mode.height}@{mode.fps:g} "
+                f"{fmt_name(mode.pixel_format)} "
+                f"actual={negotiated['width']:.0f}x{negotiated['height']:.0f}"
+                f"@{negotiated['fps']:.2f}"
+            )
             return cap, f"OpenCV V4L2 {device}", frame, device
 
         errors.append(f"OpenCV V4L2 {device}: no frame")
@@ -129,23 +134,27 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
     return None, "", None, ""
 
 
+def fmt_name(pixel_format):
+    return normalize_format(pixel_format)
+
+
 def open_capture(camera, mode, stop_event=None):
     errors = []
     fmt = normalize_format(mode.pixel_format)
 
-    # 120 FPS 及以上的 MJPG 强制优先使用 GStreamer，避免 OpenCV
-    # V4L2 路径对高帧率 MJPG 解码造成约 100 FPS 的瓶颈。
+    # 120 FPS 及以上 MJPG 强制优先 GStreamer。只有 GStreamer 无法
+    # 建立可用 pipeline 时才允许回退到 V4L2，避免程序因后端问题完全不可用。
     if fmt == "MJPG" and mode.fps >= 120:
         result = open_gstreamer_capture(camera, mode, errors, stop_event)
         if result[0]:
             return (*result, errors)
 
-    # 其余模式保持 V4L2 直接打开优先。
+        errors.append("GStreamer high-FPS MJPG unavailable; falling back to V4L2")
+
     result = open_v4l2_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
 
-    # V4L2 无法取帧时再使用 GStreamer，保留原有 fallback。
     result = open_gstreamer_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
