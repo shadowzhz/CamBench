@@ -23,7 +23,6 @@ from core.events import (
 
 
 class PreviewWorker(BaseWorker):
-
     def __init__(self, camera, mode, event_queue, preview_enabled):
         super().__init__(event_queue)
         self.camera = camera
@@ -55,19 +54,10 @@ class PreviewWorker(BaseWorker):
             return 0.0
         return (len(timestamps) - 1) / elapsed
 
-    def publish(
-        self,
-        frame,
-        opened_device,
-        backend,
-        counter,
-        start_time,
-        capture_fps,
-        display_fps,
-    ):
+    def publish(self, frame, opened_device, backend, counter, start_time,
+                capture_fps, display_fps):
         elapsed = max(time.perf_counter() - start_time, 0.001)
         avg = counter / elapsed
-
         stats = {
             "device": opened_device,
             "camera": self.camera.name,
@@ -82,7 +72,6 @@ class PreviewWorker(BaseWorker):
             "frames": str(counter),
             "elapsed": f"{elapsed:.1f}s",
         }
-
         if self._preview_enabled():
             self.put_event(make_frame_event(frame, stats))
         else:
@@ -92,11 +81,8 @@ class PreviewWorker(BaseWorker):
         cap = None
         try:
             cap, backend, first, device, errors = open_capture(
-                self.camera,
-                self.mode,
-                self.stop_event,
+                self.camera, self.mode, self.stop_event
             )
-
             if cap is None:
                 self.put_event(make_error_event("\n".join(errors)))
                 return
@@ -112,49 +98,35 @@ class PreviewWorker(BaseWorker):
                 counter += 1
                 now = time.perf_counter()
                 capture_timestamps.append(now)
-                self.publish(
-                    first,
-                    device,
-                    backend,
-                    counter,
-                    start,
-                    self._fps(capture_timestamps),
-                    self._fps(display_timestamps),
-                )
+                self.publish(first, device, backend, counter, start,
+                             self._fps(capture_timestamps), 0.0)
 
             while not self.stopped():
-                # 采集循环不等待 GUI；GUI 只接收当前最新帧。
                 ok, frame = cap.read()
-
+                now = time.perf_counter()
                 if not ok:
                     if not camera_device_present(self.camera):
                         self.put_event(make_device_lost_event("camera removed"))
                     break
 
                 counter += 1
-                now = time.perf_counter()
                 capture_timestamps.append(now)
                 capture_fps = self._fps(capture_timestamps)
 
-                interval = (
-                    1 / PREVIEW_UPDATE_FPS
-                    if self._preview_enabled()
-                    else 1 / STATS_ONLY_UPDATE_FPS
-                )
-
+                # 采集循环只负责 read()。预览事件按固定频率发布，避免 GUI
+                # 队列或图像转换反过来限制摄像头采集速度。
+                interval = (1 / PREVIEW_UPDATE_FPS if self._preview_enabled()
+                            else 1 / STATS_ONLY_UPDATE_FPS)
                 if now - last_publish >= interval:
                     last_publish = now
                     display_timestamps.append(now)
                     self.publish(
-                        frame,
-                        device,
-                        backend,
-                        counter,
-                        start,
-                        capture_fps,
-                        self._fps(display_timestamps),
+                        frame, device, backend, counter, start,
+                        capture_fps, self._fps(display_timestamps)
                     )
 
+        except Exception as exc:
+            self.put_event(make_error_event(f"capture worker error: {exc}"))
         finally:
             if cap:
                 cap.release()
