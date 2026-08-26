@@ -7,10 +7,10 @@ from camera.utils import normalize_format
 from camera.modes import fps_fraction
 
 
-def _build_source(device, use_io_mode=True):
-    # Graduation 的已验证高帧率路径使用 V4L2 mmap(io-mode=2)。
+def _build_source(device, use_io_mode=True, name=None):
     io_mode = " io-mode=2" if use_io_mode else ""
-    return f"v4l2src device={device}{io_mode} do-timestamp=true"
+    source_name = f" name={name}" if name else ""
+    return f"v4l2src device={device}{io_mode} do-timestamp=true{source_name}"
 
 
 def _build_caps(mode):
@@ -71,17 +71,11 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
 def build_native_gstreamer_pipeline(device, mode):
     if normalize_format(mode.pixel_format) != "MJPG":
         raise ValueError("native high-FPS GStreamer capture currently requires MJPG")
-    # 与 Graduation 的 200 FPS Jetson 管线保持一致：io-mode=2 + 硬件 MJPEG 解码。
     return f"{_build_source(device, True)} ! {_build_caps(mode)} ! {_jetson_mjpeg_chain('BGRx')}queue max-size-buffers=2 leaky=downstream ! appsink name=cambenchsink drop=true max-buffers=1 sync=false"
 
 
 def build_high_fps_preview_pipeline(device, mode):
-    """Single-source high-FPS pipeline.
-
-    The compressed MJPEG stream is split before JPEG decoding. The counter branch
-    therefore measures every camera buffer even when software JPEG decoding cannot
-    keep up with the requested frame rate, while the preview branch remains lossy.
-    """
+    """Native appsink path with source-side FPS measurement."""
     if normalize_format(mode.pixel_format) != "MJPG":
         raise ValueError("high-FPS preview pipeline currently requires MJPG")
     decoder = "nvv4l2decoder" if _jetson_mjpeg_available() else _jpeg_decoder()
@@ -89,13 +83,13 @@ def build_high_fps_preview_pipeline(device, mode):
         raise RuntimeError("GStreamer JPEG decoder is unavailable")
     print(f"GStreamer decoder={decoder}")
     if decoder == "nvv4l2decoder":
-        preview_chain = "queue max-size-buffers=2 leaky=downstream ! jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=BGRx ! queue max-size-buffers=2 leaky=downstream"
+        decoder_chain = "jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=BGRx ! "
     else:
-        preview_chain = f"queue max-size-buffers=2 leaky=downstream ! jpegparse ! {decoder} ! videoconvert ! video/x-raw,format=BGRx ! queue max-size-buffers=2 leaky=downstream"
+        decoder_chain = f"jpegparse ! {decoder} ! videoconvert ! video/x-raw,format=BGRx ! "
     return (
-        f"{_build_source(device, True)} ! {_build_caps(mode)} ! tee name=cambenchtee "
-        f"cambenchtee. ! queue max-size-buffers=32 leaky=downstream ! fakesink name=cambenchcounter sync=false "
-        f"cambenchtee. ! {preview_chain} ! appsink name=cambenchsink drop=true max-buffers=1 sync=false"
+        f"{_build_source(device, True, 'cambenchsrc')} ! {_build_caps(mode)} ! "
+        f"{decoder_chain}queue max-size-buffers=2 leaky=downstream ! "
+        "appsink name=cambenchsink drop=true max-buffers=1 sync=false"
     )
 
 
