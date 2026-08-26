@@ -75,6 +75,30 @@ def build_native_gstreamer_pipeline(device, mode):
     return f"{_build_source(device, True)} ! {_build_caps(mode)} ! {_jetson_mjpeg_chain('BGRx')}queue max-size-buffers=2 leaky=downstream ! appsink name=cambenchsink drop=true max-buffers=1 sync=false"
 
 
+def build_high_fps_preview_pipeline(device, mode):
+    """Single-source high-FPS pipeline.
+
+    The compressed MJPEG stream is split before JPEG decoding. The counter branch
+    therefore measures every camera buffer even when software JPEG decoding cannot
+    keep up with the requested frame rate, while the preview branch remains lossy.
+    """
+    if normalize_format(mode.pixel_format) != "MJPG":
+        raise ValueError("high-FPS preview pipeline currently requires MJPG")
+    decoder = "nvv4l2decoder" if _jetson_mjpeg_available() else _jpeg_decoder()
+    if decoder is None:
+        raise RuntimeError("GStreamer JPEG decoder is unavailable")
+    print(f"GStreamer decoder={decoder}")
+    if decoder == "nvv4l2decoder":
+        preview_chain = "queue max-size-buffers=2 leaky=downstream ! jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=BGRx ! queue max-size-buffers=2 leaky=downstream"
+    else:
+        preview_chain = f"queue max-size-buffers=2 leaky=downstream ! jpegparse ! {decoder} ! videoconvert ! video/x-raw,format=BGRx ! queue max-size-buffers=2 leaky=downstream"
+    return (
+        f"{_build_source(device, True)} ! {_build_caps(mode)} ! tee name=cambenchtee "
+        f"cambenchtee. ! queue max-size-buffers=32 leaky=downstream ! fakesink name=cambenchcounter sync=false "
+        f"cambenchtee. ! {preview_chain} ! appsink name=cambenchsink drop=true max-buffers=1 sync=false"
+    )
+
+
 def build_counter_pipeline(device, mode, use_io_mode=True):
     return f"{_build_source(device, use_io_mode)} ! {_build_caps(mode)} ! fakesink name=sink sync=false"
 
