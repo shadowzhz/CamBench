@@ -8,7 +8,9 @@ from camera.modes import fps_fraction
 
 
 def _build_source(device, use_io_mode=True):
-    return f"v4l2src device={device} do-timestamp=true"
+    # Graduation 的已验证 Jetson 高帧率路径使用 io-mode=2 (mmap)。
+    io_mode = " io-mode=2" if use_io_mode else ""
+    return f"v4l2src device={device}{io_mode} do-timestamp=true"
 
 
 def _build_caps(mode):
@@ -44,14 +46,14 @@ def has_accelerated_jpeg_decoder():
 
 def _jpeg_decoder_chain(decoder, output_format="BGR"):
     if decoder == "nvv4l2decoder":
-        return "queue max-size-buffers=4 leaky=downstream ! jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=" + output_format + " ! "
-    return f"queue max-size-buffers=4 leaky=downstream ! jpegparse ! {decoder} ! videoconvert ! video/x-raw,format={output_format} ! "
+        return "nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=" + output_format + " ! "
+    return f"jpegparse ! {decoder} ! videoconvert ! video/x-raw,format={output_format} ! "
 
 
 def _jetson_mjpeg_chain(output_format="BGRx"):
-    if not _jetson_mjpeg_available():
-        raise RuntimeError("Jetson nvv4l2decoder/nvvidconv is unavailable")
-    return "queue max-size-buffers=4 leaky=downstream ! jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=" + output_format + " ! "
+    # 不依赖 ElementFactory.find() 决定是否使用硬件解码；
+    # Graduation 已验证的管道应直接交给 GStreamer 解析器，由实际环境决定可用性。
+    return "nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=" + output_format + " ! "
 
 
 def build_gstreamer_pipeline(device, mode, use_io_mode=True):
@@ -63,13 +65,22 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
             raise RuntimeError("GStreamer JPEG decoder is unavailable")
         print(f"GStreamer decoder={decoder}")
         decoder_chain = _jpeg_decoder_chain(decoder, "BGR")
-    return f"{_build_source(device, use_io_mode)} ! {_build_caps(mode)} ! {decoder_chain}queue max-size-buffers=2 leaky=downstream ! appsink drop=true max-buffers=1 sync=false"
+    return f"{_build_source(device, use_io_mode)} ! {_build_caps(mode)} ! {decoder_chain}appsink drop=true max-buffers=1 sync=false"
 
 
 def build_native_gstreamer_pipeline(device, mode):
     if normalize_format(mode.pixel_format) != "MJPG":
         raise ValueError("native high-FPS GStreamer capture currently requires MJPG")
-    return f"{_build_source(device)} ! {_build_caps(mode)} ! {_jetson_mjpeg_chain('BGRx')}queue max-size-buffers=2 leaky=downstream ! appsink name=cambenchsink drop=true max-buffers=1 sync=false"
+    # 与 Graduation 的已验证管线保持一致：不要额外插入 jpegparse/queue，
+    # 并明确使用 io-mode=2 + nvv4l2decoder + nvvidconv。
+    return (
+        f"v4l2src device={device} io-mode=2 do-timestamp=true ! "
+        f"{_build_caps(mode)} ! "
+        "nvv4l2decoder mjpeg=1 ! "
+        "nvvidconv ! video/x-raw,format=BGRx ! "
+        "queue max-size-buffers=1 leaky=downstream ! "
+        "appsink name=cambenchsink drop=true max-buffers=1 sync=false"
+    )
 
 
 def build_counter_pipeline(device, mode, use_io_mode=True):
