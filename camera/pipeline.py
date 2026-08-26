@@ -9,8 +9,7 @@ from camera.modes import fps_fraction
 
 
 def _build_source(device, use_io_mode=True):
-    # Do not force mmap/userptr. Let v4l2src negotiate the safest supported
-    # transport mode for the camera and driver.
+    # Let v4l2src negotiate the safest transport mode for the camera/driver.
     return f"v4l2src device={device} do-timestamp=true"
 
 
@@ -33,33 +32,55 @@ def _build_caps(mode):
     )
 
 
+def _jpeg_decoders():
+    """Return JPEG decoders in performance-first order."""
+    return tuple(
+        name
+        for name in (
+            "nvv4l2decoder",
+            "v4l2sljpegdec",
+            "nvjpegdec",
+            "vaapijpegdec",
+            "jpegdec",
+            "avdec_mjpeg",
+        )
+        if Gst.ElementFactory.find(name) is not None
+    )
+
+
 def _jpeg_decoder():
-    """Return the best explicitly available JPEG decoder."""
-    for name in (
-        "v4l2sljpegdec",
-        "nvjpegdec",
-        "vaapijpegdec",
-        "jpegdec",
-        "avdec_mjpeg",
-    ):
-        if Gst.ElementFactory.find(name) is not None:
-            return name
-    return None
+    decoders = _jpeg_decoders()
+    return decoders[0] if decoders else None
 
 
 def has_accelerated_jpeg_decoder():
-    return _jpeg_decoder() not in (None, "jpegdec", "avdec_mjpeg")
+    decoder = _jpeg_decoder()
+    return decoder not in (None, "jpegdec", "avdec_mjpeg")
+
+
+def _jpeg_decoder_chain(decoder):
+    if decoder == "nvv4l2decoder":
+        # Jetson path used by the validated Graduation implementation.
+        return "queue max-size-buffers=4 leaky=downstream ! jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! "
+    return (
+        f"queue max-size-buffers=4 leaky=downstream ! jpegparse ! {decoder} ! "
+    )
 
 
 def build_gstreamer_pipeline(device, mode, use_io_mode=True):
+    """Build the compatibility OpenCV-GStreamer pipeline.
+
+    High-FPS native capture uses the same decoder/caps chain, but reads the
+    appsink directly through Gst instead of OpenCV's GStreamer wrapper.
+    """
     fmt = normalize_format(mode.pixel_format)
     decoder = _jpeg_decoder() if fmt == "MJPG" else None
 
     if fmt == "MJPG":
         if decoder is None:
             raise RuntimeError("GStreamer JPEG decoder is unavailable")
-        decoder_chain = f"queue max-size-buffers=4 leaky=downstream ! jpegparse ! {decoder} ! "
         print(f"GStreamer decoder={decoder}")
+        decoder_chain = _jpeg_decoder_chain(decoder)
     else:
         decoder_chain = ""
 
@@ -70,6 +91,24 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
         "videoconvert ! video/x-raw,format=BGR ! "
         "queue max-size-buffers=2 leaky=downstream ! "
         "appsink drop=true max-buffers=1 sync=false"
+    )
+
+
+def build_native_gstreamer_pipeline(device, mode):
+    """Build the native Gst/appsink pipeline for high-FPS MJPG capture."""
+    fmt = normalize_format(mode.pixel_format)
+    if fmt != "MJPG":
+        raise ValueError("native high-FPS GStreamer capture currently requires MJPG")
+
+    decoder = _jpeg_decoder()
+    if decoder is None:
+        raise RuntimeError("GStreamer JPEG decoder is unavailable")
+
+    return (
+        f"{_build_source(device)} ! "
+        f"{_build_caps(mode)} ! "
+        f"{_jpeg_decoder_chain(decoder)}"
+        "appsink name=cambenchsink drop=true max-buffers=1 sync=false"
     )
 
 
