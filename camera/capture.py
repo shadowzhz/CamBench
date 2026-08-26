@@ -21,17 +21,23 @@ from camera.utils import normalize_format
 Gst.init(None)
 
 
-def read_first_frame(cap, attempts=30, stop_event=None):
+def read_first_frame(cap, attempts=100, stop_event=None):
+    """Wait for the first decoded frame without hiding asynchronous GStreamer errors."""
     for _ in range(attempts):
         if stop_event and stop_event.is_set():
             return None
+        poll_error = getattr(cap, "poll_error", None)
+        if poll_error is not None:
+            error = poll_error()
+            if error:
+                raise RuntimeError(error)
         try:
             ok, frame = cap.read()
         except Exception:
-            return None
+            raise
         if ok and frame is not None:
             return frame
-        time.sleep(0.01)
+        time.sleep(0.02)
     return None
 
 
@@ -83,6 +89,23 @@ class _NativeGStreamerCapture:
         result, state, _pending = self.pipeline.get_state(5 * Gst.SECOND)
         if result == Gst.StateChangeReturn.FAILURE or state != Gst.State.PLAYING:
             raise RuntimeError(f"GStreamer 管道状态异常: {state.value_nick}")
+        error = self.poll_error()
+        if error:
+            raise RuntimeError(error)
+
+    def poll_error(self):
+        """Return the first pending GStreamer ERROR message, if any."""
+        bus = self.pipeline.get_bus()
+        if bus is None:
+            return None
+        message = bus.pop_filtered(Gst.MessageType.ERROR)
+        if message is None:
+            return None
+        error, debug = message.parse_error()
+        detail = str(error)
+        if debug:
+            detail += f" ({debug})"
+        return f"GStreamer ERROR: {detail}"
 
     def isOpened(self):
         return not self._released
@@ -92,6 +115,9 @@ class _NativeGStreamerCapture:
             return False, None
         sample = self.appsink.emit("try-pull-sample", Gst.SECOND // 2)
         if sample is None:
+            error = self.poll_error()
+            if error:
+                raise RuntimeError(error)
             return False, None
         buffer = sample.get_buffer()
         success, mapped = buffer.map(Gst.MapFlags.READ)
