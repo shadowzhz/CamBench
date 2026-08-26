@@ -1,4 +1,6 @@
 import time
+import threading
+from collections import deque
 
 import cv2
 import gi
@@ -7,7 +9,11 @@ import numpy as np
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst
 
-from camera.pipeline import build_gstreamer_pipeline, build_native_gstreamer_pipeline
+from camera.pipeline import (
+    build_gstreamer_pipeline,
+    build_native_gstreamer_pipeline,
+    build_high_fps_preview_pipeline,
+)
 from camera.pipeline import has_accelerated_jpeg_decoder
 from camera.utils import normalize_format
 
@@ -107,6 +113,83 @@ class _NativeGStreamerCapture:
             return
         self._released = True
         self.pipeline.set_state(Gst.State.NULL)
+
+
+class _HighFpsGStreamerCapture(_NativeGStreamerCapture):
+    """Capture preview frames while independently counting source MJPEG buffers."""
+
+    def __init__(self, pipeline, width, height):
+        super().__init__(pipeline, width, height, channels=4)
+        sink = pipeline.get_by_name("cambenchcounter")
+        if sink is None:
+            raise RuntimeError("找不到高帧率计数 sink")
+        pad = sink.get_static_pad("sink")
+        if pad is None:
+            raise RuntimeError("找不到高帧率计数 pad")
+        self._counter = 0
+        self._timestamps = deque(maxlen=1000)
+        self._lock = threading.Lock()
+        self._probe_id = pad.add_probe(Gst.PadProbeType.BUFFER, self._count_buffer)
+        self._counter_pad = pad
+
+    def _count_buffer(self, _pad, _info):
+        now = time.perf_counter()
+        with self._lock:
+            self._counter += 1
+            self._timestamps.append(now)
+        return Gst.PadProbeReturn.OK
+
+    def source_stats(self):
+        with self._lock:
+            count = self._counter
+            timestamps = list(self._timestamps)
+        fps = 0.0
+        if len(timestamps) >= 2:
+            elapsed = timestamps[-1] - timestamps[0]
+            if elapsed > 0:
+                fps = (len(timestamps) - 1) / elapsed
+        return count, fps
+
+    def release(self):
+        if self._released:
+            return
+        try:
+            self._counter_pad.remove_probe(self._probe_id)
+        except Exception:
+            pass
+        super().release()
+
+
+def open_high_fps_gstreamer_capture(camera, mode, errors, stop_event=None):
+    for device in camera.device_candidates:
+        if stop_event and stop_event.is_set():
+            return None, "", None, ""
+        pipeline = None
+        try:
+            description = build_high_fps_preview_pipeline(device, mode)
+            print(f"GStreamer high-FPS pipeline: {description}")
+            pipeline = Gst.parse_launch(description)
+            cap = _HighFpsGStreamerCapture(pipeline, mode.width, mode.height)
+            cap.start()
+            frame = read_first_frame(cap, stop_event=stop_event)
+            if frame is not None:
+                print(
+                    f"capture backend=GStreamer-high-FPS device={device} "
+                    f"mode={mode.width}x{mode.height}@{mode.fps:g} "
+                    f"{normalize_format(mode.pixel_format)} "
+                    f"actual={frame.shape[1]}x{frame.shape[0]}"
+                )
+                return cap, f"GStreamer high-FPS {device}", frame, device
+            errors.append(f"GStreamer high-FPS {device}: no frame")
+            cap.release()
+        except Exception as exc:
+            errors.append(f"GStreamer high-FPS {device}: {exc}")
+            if pipeline is not None:
+                try:
+                    pipeline.set_state(Gst.State.NULL)
+                except Exception:
+                    pass
+    return None, "", None, ""
 
 
 def open_native_gstreamer_capture(camera, mode, errors, stop_event=None):
@@ -209,23 +292,22 @@ def open_capture(camera, mode, stop_event=None):
     errors = []
     fmt = normalize_format(mode.pixel_format)
     if fmt == "MJPG" and mode.fps >= 120:
-        # Without an accelerated JPEG decoder, probing software jpegdec at
-        # high FPS is both unreliable and noisy. Prefer the V4L2 path, which
-        # can negotiate the camera's native MJPG frame rate directly.
-        if not has_accelerated_jpeg_decoder():
-            result = open_v4l2_capture(camera, mode, errors, stop_event)
-            if result[0]:
-                return (*result, errors)
-            errors.append("No accelerated JPEG decoder; V4L2 high-FPS MJPG fallback failed")
-        else:
+        # Count the compressed MJPEG buffers before JPEG decoding. This avoids
+        # confusing camera/source FPS with the much lower software decode FPS.
+        result = open_high_fps_gstreamer_capture(camera, mode, errors, stop_event)
+        if result[0]:
+            return (*result, errors)
+
+        if has_accelerated_jpeg_decoder():
             result = open_native_gstreamer_capture(camera, mode, errors, stop_event)
             if result[0]:
                 return (*result, errors)
-            errors.append("Native GStreamer high-FPS MJPG unavailable; falling back to OpenCV GStreamer")
-            result = open_gstreamer_capture(camera, mode, errors, stop_event)
-            if result[0]:
-                return (*result, errors)
-            errors.append("GStreamer high-FPS MJPG unavailable; falling back to V4L2")
+
+        result = open_v4l2_capture(camera, mode, errors, stop_event)
+        if result[0]:
+            return (*result, errors)
+        errors.append("GStreamer high-FPS MJPG unavailable; V4L2 fallback failed")
+
     result = open_v4l2_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
