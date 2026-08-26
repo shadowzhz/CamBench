@@ -58,12 +58,19 @@ def has_accelerated_jpeg_decoder():
     return decoder not in (None, "jpegdec", "avdec_mjpeg")
 
 
-def _jpeg_decoder_chain(decoder):
+def _jpeg_decoder_chain(decoder, output_format="BGR"):
+    """Build a decoder chain with an explicit, predictable system-memory format."""
     if decoder == "nvv4l2decoder":
-        # Jetson path used by the validated Graduation implementation.
-        return "queue max-size-buffers=4 leaky=downstream ! jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! "
+        # Jetson path validated by the Graduation project for 200 FPS MJPG.
+        return (
+            "queue max-size-buffers=4 leaky=downstream ! jpegparse ! "
+            "nvv4l2decoder mjpeg=1 ! nvvidconv ! "
+            f"video/x-raw,format={output_format} ! "
+        )
     return (
         f"queue max-size-buffers=4 leaky=downstream ! jpegparse ! {decoder} ! "
+        "videoconvert ! "
+        f"video/x-raw,format={output_format} ! "
     )
 
 
@@ -80,7 +87,7 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
         if decoder is None:
             raise RuntimeError("GStreamer JPEG decoder is unavailable")
         print(f"GStreamer decoder={decoder}")
-        decoder_chain = _jpeg_decoder_chain(decoder)
+        decoder_chain = _jpeg_decoder_chain(decoder, "BGR")
     else:
         decoder_chain = ""
 
@@ -88,7 +95,6 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
         f"{_build_source(device, use_io_mode)} ! "
         f"{_build_caps(mode)} ! "
         f"{decoder_chain}"
-        "videoconvert ! video/x-raw,format=BGR ! "
         "queue max-size-buffers=2 leaky=downstream ! "
         "appsink drop=true max-buffers=1 sync=false"
     )
@@ -104,10 +110,12 @@ def build_native_gstreamer_pipeline(device, mode):
     if decoder is None:
         raise RuntimeError("GStreamer JPEG decoder is unavailable")
 
+    print(f"GStreamer native decoder={decoder}")
     return (
         f"{_build_source(device)} ! "
         f"{_build_caps(mode)} ! "
-        f"{_jpeg_decoder_chain(decoder)}"
+        f"{_jpeg_decoder_chain(decoder, 'BGRx')}"
+        "queue max-size-buffers=2 leaky=downstream ! "
         "appsink name=cambenchsink drop=true max-buffers=1 sync=false"
     )
 
