@@ -47,7 +47,7 @@ def has_accelerated_jpeg_decoder():
 def _jpeg_decoder_chain(decoder, output_format="BGR"):
     if decoder == "nvv4l2decoder":
         return "queue max-size-buffers=4 leaky=downstream ! jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=" + output_format + " ! "
-    return f"queue max-size-buffers=4 leaky=downstream ! jpegparse ! {decoder} ! videoconvert ! video/x-raw,format={output_format} ! "
+    return f"queue max-size-buffers=4 leaky=downstream ! {decoder} ! videoconvert ! video/x-raw,format={output_format} ! "
 
 
 def _jetson_mjpeg_chain(output_format="BGRx"):
@@ -75,7 +75,7 @@ def build_native_gstreamer_pipeline(device, mode):
 
 
 def build_high_fps_preview_pipeline(device, mode):
-    """Native appsink path matching the known-working Graduation topology."""
+    """Native appsink path using the same software topology as Graduation."""
     if normalize_format(mode.pixel_format) != "MJPG":
         raise ValueError("high-FPS preview pipeline currently requires MJPG")
     decoder = "nvv4l2decoder" if _jetson_mjpeg_available() else _jpeg_decoder()
@@ -83,16 +83,19 @@ def build_high_fps_preview_pipeline(device, mode):
         raise RuntimeError("GStreamer JPEG decoder is unavailable")
     print(f"GStreamer decoder={decoder}")
     if decoder == "nvv4l2decoder":
-        decoder_chain = "jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=BGRx ! "
+        pipeline = (
+            f"{_build_source(device, True, 'cambenchsrc')} ! {_build_caps(mode)} ! "
+            "jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! "
+            "video/x-raw,format=BGRx ! "
+        )
     else:
-        # Graduation's software fallback uses BGR; keep this path explicit and
-        # let the capture adapter handle three-channel samples.
-        decoder_chain = f"jpegparse ! {decoder} ! videoconvert ! video/x-raw,format=BGRx ! "
-    return (
-        f"{_build_source(device, True, 'cambenchsrc')} ! {_build_caps(mode)} ! "
-        f"{decoder_chain}queue max-size-buffers=2 leaky=downstream ! "
-        "appsink name=cambenchsink drop=true max-buffers=1 sync=false"
-    )
+        # Match Graduation's proven software fallback: no jpegparse and BGR
+        # output directly from videoconvert.
+        pipeline = (
+            f"{_build_source(device, True, 'cambenchsrc')} ! {_build_caps(mode)} ! "
+            f"{decoder} ! videoconvert ! video/x-raw,format=BGR ! "
+        )
+    return pipeline + "appsink name=cambenchsink drop=true max-buffers=1 sync=false"
 
 
 def build_counter_pipeline(device, mode, use_io_mode=True):
