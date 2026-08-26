@@ -35,12 +35,13 @@ def _build_caps(mode):
 
 
 def _jpeg_decoder():
-    """Return the best available JPEG decoder."""
+    """Return an explicitly available JPEG decoder, or None for decodebin."""
     for name in (
         "v4l2sljpegdec",
         "nvjpegdec",
         "vaapijpegdec",
         "jpegdec",
+        "avdec_mjpeg",
     ):
         if Gst.ElementFactory.find(name) is not None:
             return name
@@ -48,7 +49,7 @@ def _jpeg_decoder():
 
 
 def has_accelerated_jpeg_decoder():
-    return _jpeg_decoder() not in (None, "jpegdec")
+    return _jpeg_decoder() not in (None, "jpegdec", "avdec_mjpeg")
 
 
 def build_gstreamer_pipeline(device, mode, use_io_mode=True):
@@ -56,11 +57,16 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
     decoder = _jpeg_decoder() if fmt == "MJPG" else None
 
     if fmt == "MJPG":
-        if decoder is None:
-            raise RuntimeError("GStreamer JPEG decoder is unavailable")
-        print(f"GStreamer decoder={decoder}")
-
-    decoder_chain = f"jpegparse ! {decoder} ! " if decoder else ""
+        if decoder:
+            decoder_chain = f"jpegparse ! {decoder} ! "
+            print(f"GStreamer decoder={decoder}")
+        else:
+            # decodebin lets GStreamer select any installed MJPEG/JPEG decoder
+            # instead of failing during pipeline construction.
+            decoder_chain = "jpegparse ! decodebin ! "
+            print("GStreamer decoder=decodebin")
+    else:
+        decoder_chain = ""
 
     return (
         f"{_build_source(device, use_io_mode)}! "
