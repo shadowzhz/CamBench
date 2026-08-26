@@ -9,12 +9,9 @@ from camera.modes import fps_fraction
 
 
 def _build_source(device, use_io_mode=True):
-    # Let v4l2src choose the transport mode. Forcing mmap (io-mode=2)
-    # can make otherwise valid high-FPS MJPG modes fail negotiation.
-    source = f"v4l2src device={device} do-timestamp=true "
-    if use_io_mode:
-        source += "io-mode=0 "
-    return source
+    # Do not force mmap/userptr. Let v4l2src negotiate the safest supported
+    # transport mode for the camera and driver.
+    return f"v4l2src device={device} do-timestamp=true"
 
 
 def _build_caps(mode):
@@ -59,19 +56,15 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
     decoder = _jpeg_decoder() if fmt == "MJPG" else None
 
     if fmt == "MJPG":
-        if decoder:
-            decoder_chain = f"jpegparse ! queue max-size-buffers=4 leaky=downstream ! {decoder} ! "
-            print(f"GStreamer decoder={decoder}")
-        else:
-            # decodebin cannot be reliably linked in a static textual pipeline
-            # because its source pad is dynamic, so fail cleanly and let capture.py
-            # use its V4L2 fallback.
+        if decoder is None:
             raise RuntimeError("GStreamer JPEG decoder is unavailable")
+        decoder_chain = f"queue max-size-buffers=4 leaky=downstream ! jpegparse ! {decoder} ! "
+        print(f"GStreamer decoder={decoder}")
     else:
         decoder_chain = ""
 
     return (
-        f"{_build_source(device, use_io_mode)}! "
+        f"{_build_source(device, use_io_mode)} ! "
         f"{_build_caps(mode)} ! "
         f"{decoder_chain}"
         "videoconvert ! video/x-raw,format=BGR ! "
@@ -83,7 +76,7 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
 def build_counter_pipeline(device, mode, use_io_mode=True):
     """Count buffers directly from v4l2src, without JPEG decode/conversion."""
     return (
-        f"{_build_source(device, use_io_mode)}! "
+        f"{_build_source(device, use_io_mode)} ! "
         f"{_build_caps(mode)} ! "
         "fakesink name=sink sync=false"
     )
