@@ -17,7 +17,6 @@ from camera.pipeline import (
 from camera.pipeline import has_accelerated_jpeg_decoder
 from camera.utils import normalize_format
 
-
 Gst.init(None)
 
 
@@ -31,10 +30,7 @@ def read_first_frame(cap, attempts=100, stop_event=None):
             error = poll_error()
             if error:
                 raise RuntimeError(error)
-        try:
-            ok, frame = cap.read()
-        except Exception:
-            raise
+        ok, frame = cap.read()
         if ok and frame is not None:
             return frame
         time.sleep(0.02)
@@ -94,7 +90,6 @@ class _NativeGStreamerCapture:
             raise RuntimeError(error)
 
     def poll_error(self):
-        """Return the first pending GStreamer ERROR message, if any."""
         bus = self.pipeline.get_bus()
         if bus is None:
             return None
@@ -142,21 +137,21 @@ class _NativeGStreamerCapture:
 
 
 class _HighFpsGStreamerCapture(_NativeGStreamerCapture):
-    """Capture preview frames while independently counting source MJPEG buffers."""
+    """Native GStreamer capture with FPS measured on v4l2src output."""
 
     def __init__(self, pipeline, width, height):
         super().__init__(pipeline, width, height, channels=4)
-        sink = pipeline.get_by_name("cambenchcounter")
-        if sink is None:
-            raise RuntimeError("找不到高帧率计数 sink")
-        pad = sink.get_static_pad("sink")
+        source = pipeline.get_by_name("cambenchsrc")
+        if source is None:
+            raise RuntimeError("找不到高帧率 v4l2src")
+        pad = source.get_static_pad("src")
         if pad is None:
-            raise RuntimeError("找不到高帧率计数 pad")
+            raise RuntimeError("找不到高帧率 v4l2src src pad")
         self._counter = 0
         self._timestamps = deque(maxlen=1000)
         self._lock = threading.Lock()
-        self._probe_id = pad.add_probe(Gst.PadProbeType.BUFFER, self._count_buffer)
         self._counter_pad = pad
+        self._probe_id = pad.add_probe(Gst.PadProbeType.BUFFER, self._count_buffer)
 
     def _count_buffer(self, _pad, _info):
         now = time.perf_counter()
@@ -169,12 +164,10 @@ class _HighFpsGStreamerCapture(_NativeGStreamerCapture):
         with self._lock:
             count = self._counter
             timestamps = list(self._timestamps)
-        fps = 0.0
-        if len(timestamps) >= 2:
-            elapsed = timestamps[-1] - timestamps[0]
-            if elapsed > 0:
-                fps = (len(timestamps) - 1) / elapsed
-        return count, fps
+        if len(timestamps) < 2:
+            return count, 0.0
+        elapsed = timestamps[-1] - timestamps[0]
+        return count, ((len(timestamps) - 1) / elapsed if elapsed > 0 else 0.0)
 
     def release(self):
         if self._released:
@@ -199,11 +192,13 @@ def open_high_fps_gstreamer_capture(camera, mode, errors, stop_event=None):
             cap.start()
             frame = read_first_frame(cap, stop_event=stop_event)
             if frame is not None:
+                count, source_fps = cap.source_stats()
                 print(
                     f"capture backend=GStreamer-high-FPS device={device} "
                     f"mode={mode.width}x{mode.height}@{mode.fps:g} "
                     f"{normalize_format(mode.pixel_format)} "
-                    f"actual={frame.shape[1]}x{frame.shape[0]}"
+                    f"actual={frame.shape[1]}x{frame.shape[0]} "
+                    f"source_fps={source_fps:.2f}"
                 )
                 return cap, f"GStreamer high-FPS {device}", frame, device
             errors.append(f"GStreamer high-FPS {device}: no frame")
@@ -318,8 +313,6 @@ def open_capture(camera, mode, stop_event=None):
     errors = []
     fmt = normalize_format(mode.pixel_format)
     if fmt == "MJPG" and mode.fps >= 120:
-        # Count the compressed MJPEG buffers before JPEG decoding. This avoids
-        # confusing camera/source FPS with the much lower software decode FPS.
         result = open_high_fps_gstreamer_capture(camera, mode, errors, stop_event)
         if result[0]:
             return (*result, errors)
