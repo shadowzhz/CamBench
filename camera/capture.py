@@ -188,7 +188,6 @@ def open_high_fps_gstreamer_capture(camera, mode, errors, stop_event=None):
             description = build_high_fps_preview_pipeline(device, mode)
             print(f"GStreamer high-FPS pipeline: {description}")
             pipeline = Gst.parse_launch(description)
-            decoder = "nvv4l2decoder" if has_accelerated_jpeg_decoder() and pipeline.get_by_name("cambenchsink") is not None else "jpegdec"
             channels = 4 if "format=BGRx" in description else 3
             cap = _HighFpsGStreamerCapture(pipeline, mode.width, mode.height, channels=channels)
             cap.start()
@@ -316,9 +315,15 @@ def open_capture(camera, mode, stop_event=None):
         result = open_high_fps_gstreamer_capture(camera, mode, errors, stop_event)
         if result[0]:
             return (*result, errors)
-        # 高帧率模式不再静默回退到 OpenCV V4L2；否则会再次把“协商 200 FPS”误报成真实采集能力。
         errors.append("高帧率 MJPG 的原生 GStreamer 管线启动失败，已禁止 V4L2 伪回退")
         return None, "", None, "", errors
+
+    # MJPG 的普通高分辨率模式也优先使用 GStreamer，避免 OpenCV
+    # VideoCapture 内部 JPEG 解码成为瓶颈（部分内置摄像头会因此掉到约 15 FPS）。
+    if fmt == "MJPG" and mode.fps >= 30:
+        result = open_gstreamer_capture(camera, mode, errors, stop_event)
+        if result[0]:
+            return (*result, errors)
 
     result = open_v4l2_capture(camera, mode, errors, stop_event)
     if result[0]:
