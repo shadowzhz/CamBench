@@ -8,6 +8,7 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst
 
 from camera.pipeline import build_gstreamer_pipeline, build_native_gstreamer_pipeline
+from camera.pipeline import has_accelerated_jpeg_decoder
 from camera.utils import normalize_format
 
 
@@ -208,16 +209,23 @@ def open_capture(camera, mode, stop_event=None):
     errors = []
     fmt = normalize_format(mode.pixel_format)
     if fmt == "MJPG" and mode.fps >= 120:
-        result = open_native_gstreamer_capture(camera, mode, errors, stop_event)
-        if result[0]:
-            return (*result, errors)
-        # Do not silently turn a failed native Jetson path into a misleading
-        # high-FPS result. Compatibility fallbacks remain available.
-        errors.append("Native GStreamer high-FPS MJPG unavailable; falling back to OpenCV GStreamer")
-        result = open_gstreamer_capture(camera, mode, errors, stop_event)
-        if result[0]:
-            return (*result, errors)
-        errors.append("GStreamer high-FPS MJPG unavailable; falling back to V4L2")
+        # Without an accelerated JPEG decoder, probing software jpegdec at
+        # high FPS is both unreliable and noisy. Prefer the V4L2 path, which
+        # can negotiate the camera's native MJPG frame rate directly.
+        if not has_accelerated_jpeg_decoder():
+            result = open_v4l2_capture(camera, mode, errors, stop_event)
+            if result[0]:
+                return (*result, errors)
+            errors.append("No accelerated JPEG decoder; V4L2 high-FPS MJPG fallback failed")
+        else:
+            result = open_native_gstreamer_capture(camera, mode, errors, stop_event)
+            if result[0]:
+                return (*result, errors)
+            errors.append("Native GStreamer high-FPS MJPG unavailable; falling back to OpenCV GStreamer")
+            result = open_gstreamer_capture(camera, mode, errors, stop_event)
+            if result[0]:
+                return (*result, errors)
+            errors.append("GStreamer high-FPS MJPG unavailable; falling back to V4L2")
     result = open_v4l2_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
