@@ -46,8 +46,8 @@ def has_accelerated_jpeg_decoder():
 
 def _jpeg_decoder_chain(decoder, output_format="BGR"):
     if decoder == "nvv4l2decoder":
-        return "jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=" + output_format + " ! "
-    return f"jpegparse ! {decoder} ! videoconvert ! video/x-raw,format={output_format} ! "
+        return "queue max-size-buffers=4 leaky=downstream ! jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=" + output_format + " ! "
+    return f"queue max-size-buffers=4 leaky=downstream ! jpegparse ! {decoder} ! videoconvert ! video/x-raw,format={output_format} ! "
 
 
 def _jetson_mjpeg_chain(output_format="BGRx"):
@@ -63,39 +63,35 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
         decoder = "nvv4l2decoder" if _jetson_mjpeg_available() else _jpeg_decoder()
         if decoder is None:
             raise RuntimeError("GStreamer JPEG decoder is unavailable")
+        print(f"GStreamer decoder={decoder}")
         decoder_chain = _jpeg_decoder_chain(decoder, "BGR")
-    return f"{_build_source(device, use_io_mode)} ! {_build_caps(mode)} ! {decoder_chain}appsink drop=true max-buffers=1 sync=false"
+    return f"{_build_source(device, use_io_mode)} ! {_build_caps(mode)} ! {decoder_chain}queue max-size-buffers=2 leaky=downstream ! appsink drop=true max-buffers=1 sync=false"
 
 
 def build_native_gstreamer_pipeline(device, mode):
     if normalize_format(mode.pixel_format) != "MJPG":
         raise ValueError("native high-FPS GStreamer capture currently requires MJPG")
-    return f"{_build_source(device, True)} ! {_build_caps(mode)} ! {_jetson_mjpeg_chain('BGRx')}appsink name=cambenchsink drop=true max-buffers=1 sync=false"
+    return f"{_build_source(device, True)} ! {_build_caps(mode)} ! {_jetson_mjpeg_chain('BGRx')}queue max-size-buffers=2 leaky=downstream ! appsink name=cambenchsink drop=true max-buffers=1 sync=false"
 
 
 def build_high_fps_preview_pipeline(device, mode):
-    """Native appsink path matching Graduation's proven MJPG pipeline.
-
-    A source pad probe counts compressed MJPEG buffers before decoding. The
-    decoded branch is intentionally kept simple so software jpegdec behaves
-    exactly like the known-good Graduation fallback.
-    """
+    """Native appsink path matching the known-working Graduation topology."""
     if normalize_format(mode.pixel_format) != "MJPG":
         raise ValueError("high-FPS preview pipeline currently requires MJPG")
-
-    if _jetson_mjpeg_available():
-        decoder_chain = "jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=BGRx ! "
-        decoder = "nvv4l2decoder"
-    else:
-        decoder = _jpeg_decoder()
-        if decoder is None:
-            raise RuntimeError("GStreamer JPEG decoder is unavailable")
-        decoder_chain = f"jpegparse ! {decoder} ! videoconvert ! video/x-raw,format=BGR ! "
-
+    decoder = "nvv4l2decoder" if _jetson_mjpeg_available() else _jpeg_decoder()
+    if decoder is None:
+        raise RuntimeError("GStreamer JPEG decoder is unavailable")
     print(f"GStreamer decoder={decoder}")
+    if decoder == "nvv4l2decoder":
+        decoder_chain = "jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format=BGRx ! "
+    else:
+        # Graduation's software fallback uses BGR; keep this path explicit and
+        # let the capture adapter handle three-channel samples.
+        decoder_chain = f"jpegparse ! {decoder} ! videoconvert ! video/x-raw,format=BGRx ! "
     return (
         f"{_build_source(device, True, 'cambenchsrc')} ! {_build_caps(mode)} ! "
-        f"{decoder_chain}appsink name=cambenchsink drop=true max-buffers=1 sync=false"
+        f"{decoder_chain}queue max-size-buffers=2 leaky=downstream ! "
+        "appsink name=cambenchsink drop=true max-buffers=1 sync=false"
     )
 
 
