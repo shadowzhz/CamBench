@@ -77,6 +77,15 @@ class PreviewWorker(BaseWorker):
         else:
             self.put_event(make_stats_event(stats))
 
+    def _source_stats(self):
+        getter = getattr(self.cap, "source_stats", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
     def run(self):
         cap = None
         try:
@@ -95,11 +104,16 @@ class PreviewWorker(BaseWorker):
             last_publish = 0.0
 
             if first is not None:
-                counter += 1
+                source_stats = self._source_stats()
                 now = time.perf_counter()
-                capture_timestamps.append(now)
+                if source_stats is None:
+                    counter += 1
+                    capture_timestamps.append(now)
+                    capture_fps = self._fps(capture_timestamps)
+                else:
+                    counter, capture_fps = source_stats
                 self.publish(first, device, backend, counter, start,
-                             self._fps(capture_timestamps), 0.0)
+                             capture_fps, 0.0)
 
             while not self.stopped():
                 ok, frame = cap.read()
@@ -109,12 +123,14 @@ class PreviewWorker(BaseWorker):
                         self.put_event(make_device_lost_event("camera removed"))
                     break
 
-                counter += 1
-                capture_timestamps.append(now)
-                capture_fps = self._fps(capture_timestamps)
+                source_stats = self._source_stats()
+                if source_stats is None:
+                    counter += 1
+                    capture_timestamps.append(now)
+                    capture_fps = self._fps(capture_timestamps)
+                else:
+                    counter, capture_fps = source_stats
 
-                # 采集循环只负责 read()。预览事件按固定频率发布，避免 GUI
-                # 队列或图像转换反过来限制摄像头采集速度。
                 interval = (1 / PREVIEW_UPDATE_FPS if self._preview_enabled()
                             else 1 / STATS_ONLY_UPDATE_FPS)
                 if now - last_publish >= interval:
