@@ -159,6 +159,12 @@ class _HighFpsGStreamerCapture(_NativeGStreamerCapture):
             self._timestamps.append(now)
         return Gst.PadProbeReturn.OK
 
+    def reset_source_stats(self):
+        """清除启动阶段的 buffer，正式测速从此刻开始。"""
+        with self._lock:
+            self._counter = 0
+            self._timestamps.clear()
+
     def source_stats(self):
         with self._lock:
             count = self._counter
@@ -193,13 +199,14 @@ def open_high_fps_gstreamer_capture(camera, mode, errors, stop_event=None):
             cap.start()
             frame = read_first_frame(cap, stop_event=stop_event)
             if frame is not None:
-                count, source_fps = cap.source_stats()
+                # 首帧只用于确认管线和图像尺寸，不作为正式测速数据。
+                cap.reset_source_stats()
                 print(
                     f"capture backend=GStreamer-high-FPS device={device} "
                     f"mode={mode.width}x{mode.height}@{mode.fps:g} "
                     f"{normalize_format(mode.pixel_format)} "
                     f"actual={frame.shape[1]}x{frame.shape[0]} "
-                    f"source_fps={source_fps:.2f} frames={count}"
+                    f"source_fps=warming_up frames=0"
                 )
                 return cap, f"GStreamer high-FPS {device}", frame, device
             error = cap.poll_error()
