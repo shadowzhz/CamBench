@@ -18,61 +18,47 @@ def read_first_frame(cap, attempts=30, stop_event=None):
     for _ in range(attempts):
         if stop_event and stop_event.is_set():
             return None
-
         try:
             ok, frame = cap.read()
         except Exception:
             return None
-
         if ok and frame is not None:
             return frame
-
         time.sleep(0.01)
-
     return None
 
 
 def _close_enough(actual, requested):
     if requested <= 0:
         return True
-
     tolerance = max(1.0, requested * 0.05)
     return abs(actual - requested) <= tolerance
 
 
 def configure_v4l2(cap, mode):
-    """Apply a V4L2 mode and verify that the driver accepted it."""
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
     fmt = normalize_format(mode.pixel_format)
     if fmt in ("MJPG", "YUYV", "YUY2"):
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fmt))
-
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, mode.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, mode.height)
     cap.set(cv2.CAP_PROP_FPS, mode.fps)
-
     actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
     actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     actual_fps = cap.get(cv2.CAP_PROP_FPS)
-
-    size_ok = (
-        int(round(actual_width)) == mode.width
-        and int(round(actual_height)) == mode.height
-    )
-    fps_ok = _close_enough(actual_fps, mode.fps)
-
     return {
         "width": actual_width,
         "height": actual_height,
         "fps": actual_fps,
-        "accepted": size_ok and fps_ok,
+        "accepted": (
+            int(round(actual_width)) == mode.width
+            and int(round(actual_height)) == mode.height
+            and _close_enough(actual_fps, mode.fps)
+        ),
     }
 
 
 class _NativeGStreamerCapture:
-    """Minimal Gst/appsink reader used only for high-FPS MJPG capture."""
-
     def __init__(self, pipeline, width, height, channels=4):
         self.pipeline = pipeline
         self.appsink = pipeline.get_by_name("cambenchsink")
@@ -97,29 +83,20 @@ class _NativeGStreamerCapture:
     def read(self):
         if self._released:
             return False, None
-
-        # Directly pull from Gst appsink, avoiding OpenCV's GStreamer adapter.
         sample = self.appsink.emit("try-pull-sample", Gst.SECOND // 2)
         if sample is None:
             return False, None
-
         buffer = sample.get_buffer()
         success, mapped = buffer.map(Gst.MapFlags.READ)
         if not success:
             return False, None
-
         try:
             expected_size = self.width * self.height * self.channels
             if len(mapped.data) < expected_size:
                 return False, None
-            frame = np.frombuffer(
-                mapped.data,
-                dtype=np.uint8,
-                count=expected_size,
-            ).reshape((self.height, self.width, self.channels))
-            if self.channels == 4:
-                # Copy before unmapping Gst memory.
-                return True, frame[:, :, :3].copy()
+            frame = np.frombuffer(mapped.data, dtype=np.uint8, count=expected_size).reshape(
+                (self.height, self.width, self.channels)
+            )
             return True, frame[:, :, :3].copy()
         finally:
             buffer.unmap(mapped)
@@ -132,22 +109,15 @@ class _NativeGStreamerCapture:
 
 
 def open_native_gstreamer_capture(camera, mode, errors, stop_event=None):
-    """Open the validated Jetson-style native Gst/appsink high-FPS path."""
     for device in camera.device_candidates:
         if stop_event and stop_event.is_set():
             return None, "", None, ""
-
         pipeline = None
         try:
             description = build_native_gstreamer_pipeline(device, mode)
             print(f"GStreamer native pipeline: {description}")
             pipeline = Gst.parse_launch(description)
-            cap = _NativeGStreamerCapture(
-                pipeline,
-                mode.width,
-                mode.height,
-                channels=4,
-            )
+            cap = _NativeGStreamerCapture(pipeline, mode.width, mode.height, channels=4)
             cap.start()
             frame = read_first_frame(cap, stop_event=stop_event)
             if frame is not None:
@@ -167,7 +137,6 @@ def open_native_gstreamer_capture(camera, mode, errors, stop_event=None):
                     pipeline.set_state(Gst.State.NULL)
                 except Exception:
                     pass
-
     return None, "", None, ""
 
 
@@ -176,21 +145,17 @@ def open_gstreamer_capture(camera, mode, errors, stop_event=None):
         for io in (True, False):
             if stop_event and stop_event.is_set():
                 return None, "", None, ""
-
             try:
                 pipeline = build_gstreamer_pipeline(device, mode, io)
                 cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
             except Exception as exc:
                 errors.append(f"GStreamer {device}: {exc}")
                 continue
-
             label = f"GStreamer {device}"
-
             if not cap.isOpened():
                 errors.append(f"{label}: open failed")
                 cap.release()
                 continue
-
             frame = read_first_frame(cap, stop_event=stop_event)
             if frame is not None:
                 print(
@@ -200,10 +165,8 @@ def open_gstreamer_capture(camera, mode, errors, stop_event=None):
                     f"actual={frame.shape[1]}x{frame.shape[0]}"
                 )
                 return cap, label, frame, device
-
             errors.append(f"{label}: no frame")
             cap.release()
-
     return None, "", None, ""
 
 
@@ -211,16 +174,12 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
     for device in camera.device_candidates:
         if stop_event and stop_event.is_set():
             return None, "", None, ""
-
         cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
-
         if not cap.isOpened():
             errors.append(f"OpenCV V4L2 {device}: open failed")
             cap.release()
             continue
-
         negotiated = configure_v4l2(cap, mode)
-
         if not negotiated["accepted"]:
             errors.append(
                 f"OpenCV V4L2 {device}: mode rejected "
@@ -230,9 +189,7 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
             )
             cap.release()
             continue
-
         frame = read_first_frame(cap, stop_event=stop_event)
-
         if frame is not None:
             print(
                 f"capture backend=V4L2 device={device} "
@@ -242,37 +199,29 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
                 f"@{negotiated['fps']:.2f}"
             )
             return cap, f"OpenCV V4L2 {device}", frame, device
-
         errors.append(f"OpenCV V4L2 {device}: no frame")
         cap.release()
-
     return None, "", None, ""
 
 
 def open_capture(camera, mode, stop_event=None):
     errors = []
     fmt = normalize_format(mode.pixel_format)
-
-    # High-FPS MJPG must use native Gst/appsink. OpenCV CAP_GSTREAMER is kept
-    # as a compatibility fallback, but is deliberately not the primary path.
     if fmt == "MJPG" and mode.fps >= 120:
         result = open_native_gstreamer_capture(camera, mode, errors, stop_event)
         if result[0]:
             return (*result, errors)
-
+        # Do not silently turn a failed native Jetson path into a misleading
+        # high-FPS result. Compatibility fallbacks remain available.
         errors.append("Native GStreamer high-FPS MJPG unavailable; falling back to OpenCV GStreamer")
         result = open_gstreamer_capture(camera, mode, errors, stop_event)
         if result[0]:
             return (*result, errors)
-
         errors.append("GStreamer high-FPS MJPG unavailable; falling back to V4L2")
-
     result = open_v4l2_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
-
     result = open_gstreamer_capture(camera, mode, errors, stop_event)
     if result[0]:
         return (*result, errors)
-
     return None, "", None, "", errors
