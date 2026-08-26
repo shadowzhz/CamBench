@@ -68,8 +68,13 @@ def open_gstreamer_capture(camera, mode, errors, stop_event=None):
             if stop_event and stop_event.is_set():
                 return None, "", None, ""
 
-            pipeline = build_gstreamer_pipeline(device, mode, io)
-            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            try:
+                pipeline = build_gstreamer_pipeline(device, mode, io)
+                cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            except Exception as exc:
+                errors.append(f"GStreamer {device}: {exc}")
+                continue
+
             label = f"GStreamer {device}"
 
             if not cap.isOpened():
@@ -82,7 +87,8 @@ def open_gstreamer_capture(camera, mode, errors, stop_event=None):
                 print(
                     f"capture backend=GStreamer device={device} "
                     f"mode={mode.width}x{mode.height}@{mode.fps:g} "
-                    f"{normalize_format(mode.pixel_format)}"
+                    f"{normalize_format(mode.pixel_format)} "
+                    f"actual={frame.shape[1]}x{frame.shape[0]}"
                 )
                 return cap, label, frame, device
 
@@ -122,7 +128,7 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
             print(
                 f"capture backend=V4L2 device={device} "
                 f"mode={mode.width}x{mode.height}@{mode.fps:g} "
-                f"{fmt_name(mode.pixel_format)} "
+                f"{normalize_format(mode.pixel_format)} "
                 f"actual={negotiated['width']:.0f}x{negotiated['height']:.0f}"
                 f"@{negotiated['fps']:.2f}"
             )
@@ -134,16 +140,10 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
     return None, "", None, ""
 
 
-def fmt_name(pixel_format):
-    return normalize_format(pixel_format)
-
-
 def open_capture(camera, mode, stop_event=None):
     errors = []
     fmt = normalize_format(mode.pixel_format)
 
-    # 120 FPS 及以上 MJPG 强制优先 GStreamer。只有 GStreamer 无法
-    # 建立可用 pipeline 时才允许回退到 V4L2，避免程序因后端问题完全不可用。
     if fmt == "MJPG" and mode.fps >= 120:
         result = open_gstreamer_capture(camera, mode, errors, stop_event)
         if result[0]:
