@@ -5,6 +5,7 @@ from collections import deque
 from workers.base import BaseWorker
 
 from camera.capture import open_capture
+from camera.fps import FpsMeter
 from camera.utils import camera_device_present
 
 from core.config import (
@@ -57,7 +58,7 @@ class PreviewWorker(BaseWorker):
     def publish(self, frame, opened_device, backend, counter, start_time,
                 capture_fps, display_fps):
         elapsed = max(time.perf_counter() - start_time, 0.001)
-        avg = counter / elapsed
+        avg = max(counter - 1, 0) / elapsed if counter >= 2 else 0.0
         stats = {
             "device": opened_device,
             "camera": self.camera.name,
@@ -98,7 +99,7 @@ class PreviewWorker(BaseWorker):
 
             self.cap = cap
             counter = 0
-            capture_timestamps = deque(maxlen=PREVIEW_FPS_HISTORY_SIZE)
+            capture_meter = FpsMeter(PREVIEW_FPS_HISTORY_SIZE)
             display_timestamps = deque(maxlen=PREVIEW_FPS_HISTORY_SIZE)
             start = time.perf_counter()
             last_publish = 0.0
@@ -107,9 +108,9 @@ class PreviewWorker(BaseWorker):
                 source_stats = self._source_stats()
                 now = time.perf_counter()
                 if source_stats is None:
-                    counter += 1
-                    capture_timestamps.append(now)
-                    capture_fps = self._fps(capture_timestamps)
+                    capture_meter.tick(now)
+                    counter = capture_meter.frames
+                    capture_fps = capture_meter.current_fps
                 else:
                     counter, capture_fps = source_stats
                 self.publish(first, device, backend, counter, start,
@@ -125,9 +126,9 @@ class PreviewWorker(BaseWorker):
 
                 source_stats = self._source_stats()
                 if source_stats is None:
-                    counter += 1
-                    capture_timestamps.append(now)
-                    capture_fps = self._fps(capture_timestamps)
+                    capture_meter.tick(now)
+                    counter = capture_meter.frames
+                    capture_fps = capture_meter.current_fps
                 else:
                     counter, capture_fps = source_stats
 
