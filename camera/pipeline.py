@@ -39,11 +39,16 @@ def has_accelerated_jpeg_decoder():
 
 def build_gstreamer_pipeline(device, mode, use_io_mode=True):
     fmt = normalize_format(mode.pixel_format)
-    decoder = f"jpegparse ! {_jpeg_decoder()} ! " if fmt == "MJPG" else ""
+    decoder = _jpeg_decoder() if fmt == "MJPG" else None
+
+    if decoder:
+        print(f"GStreamer decoder={decoder}")
+
+    decoder_chain = f"jpegparse ! {decoder} ! " if decoder else ""
     return (
         f"{_build_source(device, use_io_mode)}! "
         f"{_build_caps(mode)} ! "
-        f"{decoder}"
+        f"{decoder_chain}"
         "videoconvert ! video/x-raw,format=BGR ! "
         "appsink drop=true max-buffers=1 sync=false"
     )
