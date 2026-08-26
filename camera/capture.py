@@ -21,7 +21,6 @@ Gst.init(None)
 
 
 def read_first_frame(cap, attempts=100, stop_event=None):
-    """Wait for the first decoded frame without hiding asynchronous GStreamer errors."""
     for _ in range(attempts):
         if stop_event and stop_event.is_set():
             return None
@@ -125,7 +124,7 @@ class _NativeGStreamerCapture:
             frame = np.frombuffer(mapped.data, dtype=np.uint8, count=expected_size).reshape(
                 (self.height, self.width, self.channels)
             )
-            return True, frame[:, :, :3].copy()
+            return True, frame[:, :, :3].copy() if self.channels == 4 else frame.copy()
         finally:
             buffer.unmap(mapped)
 
@@ -139,8 +138,8 @@ class _NativeGStreamerCapture:
 class _HighFpsGStreamerCapture(_NativeGStreamerCapture):
     """Native GStreamer capture with FPS measured on v4l2src output."""
 
-    def __init__(self, pipeline, width, height):
-        super().__init__(pipeline, width, height, channels=4)
+    def __init__(self, pipeline, width, height, channels=3):
+        super().__init__(pipeline, width, height, channels=channels)
         source = pipeline.get_by_name("cambenchsrc")
         if source is None:
             raise RuntimeError("找不到高帧率 v4l2src")
@@ -184,11 +183,14 @@ def open_high_fps_gstreamer_capture(camera, mode, errors, stop_event=None):
         if stop_event and stop_event.is_set():
             return None, "", None, ""
         pipeline = None
+        cap = None
         try:
             description = build_high_fps_preview_pipeline(device, mode)
             print(f"GStreamer high-FPS pipeline: {description}")
             pipeline = Gst.parse_launch(description)
-            cap = _HighFpsGStreamerCapture(pipeline, mode.width, mode.height)
+            decoder = "nvv4l2decoder" if has_accelerated_jpeg_decoder() and pipeline.get_by_name("cambenchsink") is not None else "jpegdec"
+            channels = 4 if "format=BGRx" in description else 3
+            cap = _HighFpsGStreamerCapture(pipeline, mode.width, mode.height, channels=channels)
             cap.start()
             frame = read_first_frame(cap, stop_event=stop_event)
             if frame is not None:
@@ -198,14 +200,17 @@ def open_high_fps_gstreamer_capture(camera, mode, errors, stop_event=None):
                     f"mode={mode.width}x{mode.height}@{mode.fps:g} "
                     f"{normalize_format(mode.pixel_format)} "
                     f"actual={frame.shape[1]}x{frame.shape[0]} "
-                    f"source_fps={source_fps:.2f}"
+                    f"source_fps={source_fps:.2f} frames={count}"
                 )
                 return cap, f"GStreamer high-FPS {device}", frame, device
-            errors.append(f"GStreamer high-FPS {device}: no frame")
+            error = cap.poll_error()
+            errors.append(f"GStreamer high-FPS {device}: {error or 'no frame'}")
             cap.release()
         except Exception as exc:
             errors.append(f"GStreamer high-FPS {device}: {exc}")
-            if pipeline is not None:
+            if cap is not None:
+                cap.release()
+            elif pipeline is not None:
                 try:
                     pipeline.set_state(Gst.State.NULL)
                 except Exception:
@@ -287,21 +292,16 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
         negotiated = configure_v4l2(cap, mode)
         if not negotiated["accepted"]:
             errors.append(
-                f"OpenCV V4L2 {device}: mode rejected "
-                f"requested={mode.width}x{mode.height}@{mode.fps:.2f}, "
-                f"actual={negotiated['width']:.0f}x{negotiated['height']:.0f}"
-                f"@{negotiated['fps']:.2f}"
+                f"OpenCV V4L2 {device}: mode rejected requested={mode.width}x{mode.height}@{mode.fps:.2f}, "
+                f"actual={negotiated['width']:.0f}x{negotiated['height']:.0f}@{negotiated['fps']:.2f}"
             )
             cap.release()
             continue
         frame = read_first_frame(cap, stop_event=stop_event)
         if frame is not None:
             print(
-                f"capture backend=V4L2 device={device} "
-                f"mode={mode.width}x{mode.height}@{mode.fps:g} "
-                f"{normalize_format(mode.pixel_format)} "
-                f"actual={negotiated['width']:.0f}x{negotiated['height']:.0f}"
-                f"@{negotiated['fps']:.2f}"
+                f"capture backend=V4L2 device={device} mode={mode.width}x{mode.height}@{mode.fps:g} "
+                f"{normalize_format(mode.pixel_format)} actual={negotiated['width']:.0f}x{negotiated['height']:.0f}@{negotiated['fps']:.2f}"
             )
             return cap, f"OpenCV V4L2 {device}", frame, device
         errors.append(f"OpenCV V4L2 {device}: no frame")
@@ -316,16 +316,9 @@ def open_capture(camera, mode, stop_event=None):
         result = open_high_fps_gstreamer_capture(camera, mode, errors, stop_event)
         if result[0]:
             return (*result, errors)
-
-        if has_accelerated_jpeg_decoder():
-            result = open_native_gstreamer_capture(camera, mode, errors, stop_event)
-            if result[0]:
-                return (*result, errors)
-
-        result = open_v4l2_capture(camera, mode, errors, stop_event)
-        if result[0]:
-            return (*result, errors)
-        errors.append("GStreamer high-FPS MJPG unavailable; V4L2 fallback failed")
+        # 高帧率模式不再静默回退到 OpenCV V4L2；否则会再次把“协商 200 FPS”误报成真实采集能力。
+        errors.append("高帧率 MJPG 的原生 GStreamer 管线启动失败，已禁止 V4L2 伪回退")
+        return None, "", None, "", errors
 
     result = open_v4l2_capture(camera, mode, errors, stop_event)
     if result[0]:
