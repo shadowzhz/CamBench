@@ -1,9 +1,17 @@
 import time
 
 import cv2
+import gi
+import numpy as np
 
-from camera.pipeline import build_gstreamer_pipeline
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst
+
+from camera.pipeline import build_gstreamer_pipeline, build_native_gstreamer_pipeline
 from camera.utils import normalize_format
+
+
+Gst.init(None)
 
 
 def read_first_frame(cap, attempts=30, stop_event=None):
@@ -60,6 +68,107 @@ def configure_v4l2(cap, mode):
         "fps": actual_fps,
         "accepted": size_ok and fps_ok,
     }
+
+
+class _NativeGStreamerCapture:
+    """Minimal Gst/appsink reader used only for high-FPS MJPG capture."""
+
+    def __init__(self, pipeline, width, height, channels=4):
+        self.pipeline = pipeline
+        self.appsink = pipeline.get_by_name("cambenchsink")
+        if self.appsink is None:
+            raise RuntimeError("找不到 CamBench GStreamer appsink")
+        self.width = width
+        self.height = height
+        self.channels = channels
+        self._released = False
+
+    def start(self):
+        result = self.pipeline.set_state(Gst.State.PLAYING)
+        if result == Gst.StateChangeReturn.FAILURE:
+            raise RuntimeError("GStreamer 管道无法进入 PLAYING 状态")
+        result, state, _pending = self.pipeline.get_state(5 * Gst.SECOND)
+        if result == Gst.StateChangeReturn.FAILURE or state != Gst.State.PLAYING:
+            raise RuntimeError(f"GStreamer 管道状态异常: {state.value_nick}")
+
+    def isOpened(self):
+        return not self._released
+
+    def read(self):
+        if self._released:
+            return False, None
+
+        # Directly pull from Gst appsink, avoiding OpenCV's GStreamer adapter.
+        sample = self.appsink.emit("try-pull-sample", Gst.SECOND // 2)
+        if sample is None:
+            return False, None
+
+        buffer = sample.get_buffer()
+        success, mapped = buffer.map(Gst.MapFlags.READ)
+        if not success:
+            return False, None
+
+        try:
+            expected_size = self.width * self.height * self.channels
+            if len(mapped.data) < expected_size:
+                return False, None
+            frame = np.frombuffer(
+                mapped.data,
+                dtype=np.uint8,
+                count=expected_size,
+            ).reshape((self.height, self.width, self.channels))
+            if self.channels == 4:
+                # Copy before unmapping Gst memory.
+                return True, frame[:, :, :3].copy()
+            return True, frame[:, :, :3].copy()
+        finally:
+            buffer.unmap(mapped)
+
+    def release(self):
+        if self._released:
+            return
+        self._released = True
+        self.pipeline.set_state(Gst.State.NULL)
+
+
+def open_native_gstreamer_capture(camera, mode, errors, stop_event=None):
+    """Open the validated Jetson-style native Gst/appsink high-FPS path."""
+    for device in camera.device_candidates:
+        if stop_event and stop_event.is_set():
+            return None, "", None, ""
+
+        pipeline = None
+        try:
+            description = build_native_gstreamer_pipeline(device, mode)
+            print(f"GStreamer native pipeline: {description}")
+            pipeline = Gst.parse_launch(description)
+            cap = _NativeGStreamerCapture(
+                pipeline,
+                mode.width,
+                mode.height,
+                channels=4,
+            )
+            cap.start()
+            frame = read_first_frame(cap, stop_event=stop_event)
+            if frame is not None:
+                print(
+                    f"capture backend=GStreamer-native device={device} "
+                    f"mode={mode.width}x{mode.height}@{mode.fps:g} "
+                    f"{normalize_format(mode.pixel_format)} "
+                    f"actual={frame.shape[1]}x{frame.shape[0]}"
+                )
+                return cap, f"GStreamer native {device}", frame, device
+            errors.append(f"GStreamer native {device}: no frame")
+            cap.release()
+        except Exception as exc:
+            errors.append(f"GStreamer native {device}: {exc}")
+            if pipeline is not None:
+                try:
+                    pipeline.set_state(Gst.State.NULL)
+                except Exception:
+                    pass
+
+    return None, "", None, ""
 
 
 def open_gstreamer_capture(camera, mode, errors, stop_event=None):
@@ -144,7 +253,14 @@ def open_capture(camera, mode, stop_event=None):
     errors = []
     fmt = normalize_format(mode.pixel_format)
 
+    # High-FPS MJPG must use native Gst/appsink. OpenCV CAP_GSTREAMER is kept
+    # as a compatibility fallback, but is deliberately not the primary path.
     if fmt == "MJPG" and mode.fps >= 120:
+        result = open_native_gstreamer_capture(camera, mode, errors, stop_event)
+        if result[0]:
+            return (*result, errors)
+
+        errors.append("Native GStreamer high-FPS MJPG unavailable; falling back to OpenCV GStreamer")
         result = open_gstreamer_capture(camera, mode, errors, stop_event)
         if result[0]:
             return (*result, errors)
