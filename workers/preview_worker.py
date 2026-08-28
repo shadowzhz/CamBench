@@ -1,29 +1,42 @@
 import queue
+import threading
 import time
 from collections import deque
 
-from workers.base import BaseWorker
-
-from camera.capture import open_capture
+from camera.capture import HighFpsGStreamerCapture, open_capture
 from camera.fps import FpsMeter
 from camera.utils import camera_device_present
-
-from core.config import (
+from core import (
+    PREVIEW_FPS_HISTORY_SIZE,
     PREVIEW_UPDATE_FPS,
     STATS_ONLY_UPDATE_FPS,
-    PREVIEW_FPS_HISTORY_SIZE,
-)
-
-from core.events import (
+    make_device_lost_event,
+    make_error_event,
     make_frame_event,
     make_stats_event,
-    make_error_event,
-    make_device_lost_event,
     make_stopped_event,
 )
+from core import EventType
+
+
+class BaseWorker(threading.Thread):
+    """后台采集线程基类,提供统一的停止标志。"""
+
+    def __init__(self, event_queue):
+        super().__init__(daemon=True)
+        self.event_queue = event_queue
+        self.stop_event = threading.Event()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def stopped(self):
+        return self.stop_event.is_set()
 
 
 class PreviewWorker(BaseWorker):
+    """采集线程:持续读帧、统计 FPS,按固定频率向 GUI 发布事件。"""
+
     def __init__(self, camera, mode, event_queue, preview_enabled):
         super().__init__(event_queue)
         self.camera = camera
@@ -31,20 +44,13 @@ class PreviewWorker(BaseWorker):
         self.preview_enabled = preview_enabled
         self.cap = None
 
-    def stop(self):
-        super().stop()
-
     def put_event(self, event):
+        # 队列只保留最新事件(maxsize 由 GUI 决定):GUI 跟不上时宁可丢事件,
+        # 也不能让 put 阻塞拖慢采集端。
         try:
             self.event_queue.put_nowait(event)
         except queue.Full:
             pass
-
-    def _preview_enabled(self):
-        value = self.preview_enabled
-        if hasattr(value, "is_set"):
-            return value.is_set()
-        return bool(value)
 
     @staticmethod
     def _fps(timestamps):
@@ -73,29 +79,10 @@ class PreviewWorker(BaseWorker):
             "frames": str(counter),
             "elapsed": f"{elapsed:.1f}s",
         }
-        if self._preview_enabled():
+        if self.preview_enabled:
             self.put_event(make_frame_event(frame, stats))
         else:
             self.put_event(make_stats_event(stats))
-
-    def _source_stats(self):
-        getter = getattr(self.cap, "source_stats", None)
-        if getter is None:
-            return None
-        try:
-            return getter()
-        except Exception:
-            return None
-
-    def _reset_source_stats(self):
-        resetter = getattr(self.cap, "reset_source_stats", None)
-        if resetter is None:
-            return False
-        try:
-            resetter()
-            return True
-        except Exception:
-            return False
 
     def run(self):
         cap = None
@@ -112,8 +99,9 @@ class PreviewWorker(BaseWorker):
             capture_meter = FpsMeter(PREVIEW_FPS_HISTORY_SIZE)
             display_timestamps = deque(maxlen=PREVIEW_FPS_HISTORY_SIZE)
 
-            # 首帧只用于确认设备已经成功打开；正式 FPS 测试从此刻开始。
-            self._reset_source_stats()
+            # 首帧只用于确认设备已经成功打开;正式 FPS 测试从此刻开始。
+            if isinstance(cap, HighFpsGStreamerCapture):
+                cap.reset_source_stats()
             capture_meter.reset()
             start = time.perf_counter()
             last_publish = start
@@ -126,19 +114,19 @@ class PreviewWorker(BaseWorker):
                 now = time.perf_counter()
                 if not ok:
                     if not camera_device_present(self.camera):
-                        self.put_event(make_device_lost_event("camera removed"))
+                        self.put_event(make_device_lost_event("摄像头已拔出"))
                     break
 
-                source_stats = self._source_stats()
-                if source_stats is None:
+                if isinstance(cap, HighFpsGStreamerCapture):
+                    # 高帧率路径:统计来自 v4l2src 源端,不受预览刷新影响
+                    counter, capture_fps = cap.source_stats()
+                else:
                     capture_meter.tick(now)
                     counter = capture_meter.frames
                     capture_fps = capture_meter.current_fps
-                else:
-                    counter, capture_fps = source_stats
 
-                interval = (1 / PREVIEW_UPDATE_FPS if self._preview_enabled()
-                            else 1 / STATS_ONLY_UPDATE_FPS)
+                interval = 1 / PREVIEW_UPDATE_FPS if self.preview_enabled \
+                    else 1 / STATS_ONLY_UPDATE_FPS
                 if now - last_publish >= interval:
                     last_publish = now
                     display_timestamps.append(now)
@@ -148,7 +136,7 @@ class PreviewWorker(BaseWorker):
                     )
 
         except Exception as exc:
-            self.put_event(make_error_event(f"capture worker error: {exc}"))
+            self.put_event(make_error_event(f"采集线程异常: {exc}"))
         finally:
             if cap:
                 cap.release()

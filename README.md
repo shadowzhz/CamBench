@@ -6,9 +6,11 @@ CamBench 是一个面向 Linux V4L2 摄像头的实时 FPS 测试与预览工具
 
 - 自动扫描 `/dev/video*` 摄像头设备。
 - 使用 V4L2 能力信息过滤非 Video Capture 节点，并合并同一物理摄像头的多个节点。
-- 读取摄像头支持的像素格式、分辨率和 FPS 模式。
+- 优先通过 V4L2 ioctl（`VIDIOC_ENUM_FMT` / `ENUM_FRAMESIZES` / `ENUM_FRAMEINTERVALS`）直接枚举像素格式、分辨率和 FPS 模式，不依赖 `v4l2-ctl`；ioctl 不可用时回退到解析 `v4l2-ctl --list-formats-ext` 文本。
 - 支持 MJPG、YUYV、YUY2 模式。
 - 显示请求分辨率、实际分辨率、目标 FPS、实时 FPS、平均 FPS、帧数和运行时间。
+- 实测 FPS 持续低于标称值时，GUI 自动给出"跑不满"提示。
+- 内置诊断功能：USB 总线速度（sysfs）、自动曝光状态（含切换手动曝光的命令）、内核日志中的 uvcvideo 带宽告警。
 - MJPG 在较高帧率/分辨率场景下优先使用 GStreamer，降低 OpenCV 内部 JPEG 解码造成的性能瓶颈。
 - 对 MJPG `>=120 FPS` 模式使用原生 GStreamer appsink 路径，并在 `v4l2src` 输出端统计源 FPS。
 - GStreamer 可根据系统环境使用 Jetson `nvv4l2decoder` / `nvvidconv` 或软件 JPEG 解码器。
@@ -19,12 +21,12 @@ CamBench 是一个面向 Linux V4L2 摄像头的实时 FPS 测试与预览工具
 
 ```text
 CamBench/
-├── app/                 # Tkinter GUI
-├── camera/              # 摄像头扫描、模式解析、采集和 GStreamer 管线
-├── core/                # 配置、事件、日志等核心模块
-├── workers/             # 摄像头采集/统计 Worker
 ├── main.py              # 程序入口
-└── .gitignore
+├── core.py              # 配置、Worker->GUI 事件、日志
+├── app/                 # Tkinter GUI(主窗口、样式、统计面板)
+├── camera/              # 设备扫描、V4L2 枚举、采集后端与 GStreamer 管线
+├── workers/             # 采集线程(与 GUI 通过事件队列通信)
+└── tests/               # 单元测试
 ```
 
 ## 环境要求
@@ -79,12 +81,23 @@ CamBench 会根据模式选择采集路径：
 
 高帧率 MJPG 路径会在 `v4l2src` 的 source pad 上统计收到的 buffer 数量和时间间隔，因此 GUI 中的实时 FPS 更接近摄像头源端的实际输出，而不是单纯受到 Tkinter 预览刷新频率限制。
 
+## 诊断"跑不满帧率"
+
+实测 FPS 明显低于标称值时，通常不是解码瓶颈，而是以下三个原因之一。点击 GUI 中的「诊断」按钮可以直接查看对应线索：
+
+1. **自动曝光**：光线不足时相机会自动延长曝光时间，把帧率压到环境光频率的倍数（如标称 120 FPS 实际 25 FPS）。诊断会读取 `auto_exposure` 状态并给出切换手动曝光的命令。
+2. **USB 带宽**：USB 2.0（480 Mbps）无法承载高分辨率高帧率模式；多相机共享同一 USB 总线时也会互相挤占。诊断读取 sysfs 中的 USB 端口速度。
+3. **驱动带宽协商失败**：`uvcvideo` 驱动在带宽不足时会降级，并在内核日志中留下告警。诊断会检查 `dmesg` / `journalctl`。
+
+若要单独排查采集层损耗，可对比 GUI 中 GStreamer 管线源端统计的实时 FPS（`camera/pipeline.py` 的 fakesink 计数路径）与驱动层极限；也可使用 `v4l2-ctl --stream-mmap --stream-count=200` 直接测量驱动层帧率。
+
 ## 注意事项
 
 - 摄像头实际能够达到的 FPS 取决于设备、USB 带宽、驱动、分辨率、像素格式、曝光设置以及系统负载。
 - GUI 预览刷新频率并不等于摄像头采集 FPS；项目默认预览刷新为 30 FPS，但采集统计可以高于此值。
-- `v4l2-ctl` 不存在时，项目会使用预置的常见模式作为回退，因此建议在完整 Linux 环境中安装 `v4l-utils`。
+- 模式枚举优先走 V4L2 ioctl，因此未安装 `v4l2-ctl` 时仍能正常识别大多数 UVC 摄像头；个别不支持帧间隔枚举的驱动会回退到预置的常见模式。
 - 高帧率 MJPG 模式需要可用的 GStreamer JPEG 解码器。
+- 运行单元测试：`python3 -m unittest discover -s tests`。
 
 ## 许可证
 

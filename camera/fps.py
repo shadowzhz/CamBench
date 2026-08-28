@@ -1,3 +1,5 @@
+"""帧率计量:滚动窗口(最近 N 个时间戳)算实时值,累计时间算平均值。"""
+
 import time
 from collections import deque
 

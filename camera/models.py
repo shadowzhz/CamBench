@@ -5,12 +5,10 @@ from camera.utils import normalize_format
 
 @dataclass(frozen=True)
 class CameraMode:
-
     pixel_format: str
     width: int
     height: int
     fps: float
-
 
     @property
     def display_name(self):
@@ -23,33 +21,19 @@ class CameraMode:
 
 @dataclass(frozen=True)
 class CameraInfo:
-
     device: str
     name: str
     bus_info: str
     modes: tuple
     alt_devices: tuple = ()
 
-
     @property
     def display_name(self):
-
         if self.bus_info:
-            return (
-                f"{self.name}    "
-                f"{self.device}"
-            )
-
+            return f"{self.name}    {self.device}"
         return self.device
-
 
     @property
     def device_candidates(self):
-
-        return (
-            self.device,
-        ) + tuple(
-            x for x in self.alt_devices
-            if x != self.device
-        )
-    
+        """同一物理摄像头可能占用多个节点,采集时逐个尝试。"""
+        return (self.device,) + tuple(x for x in self.alt_devices if x != self.device)
