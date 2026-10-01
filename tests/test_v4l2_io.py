@@ -109,6 +109,11 @@ class IoctlNumberTests(unittest.TestCase):
 
 
 class QueryCapabilityTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch("camera.v4l2_io._close_device")
+        self.mock_close = patcher.start()
+        self.addCleanup(patcher.stop)
+
     @patch(
         "camera.v4l2_io._call_ioctl",
         new_callable=lambda: FakeV4l2Device(FAKE_DEVICE_FORMATS),
@@ -146,6 +151,11 @@ class QueryCapabilityTests(unittest.TestCase):
 
 
 class EnumerateDeviceModesTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch("camera.v4l2_io._close_device")
+        self.mock_close = patcher.start()
+        self.addCleanup(patcher.stop)
+
     @patch(
         "camera.v4l2_io._call_ioctl",
         new_callable=lambda: FakeV4l2Device(FAKE_DEVICE_FORMATS),

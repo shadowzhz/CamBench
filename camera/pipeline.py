@@ -1,7 +1,11 @@
-import gi
-
-gi.require_version("Gst", "1.0")
-from gi.repository import Gst
+try:
+    import gi
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+    HAS_GSTREAMER = True
+except (ImportError, ValueError, Exception):
+    Gst = None
+    HAS_GSTREAMER = False
 
 from camera.modes import fps_fraction
 from camera.utils import normalize_format
@@ -27,6 +31,8 @@ def _build_caps(mode):
 
 
 def _element_available(name):
+    if not HAS_GSTREAMER or Gst is None:
+        return False
     return Gst.ElementFactory.find(name) is not None
 
 
@@ -35,15 +41,15 @@ def _jetson_mjpeg_available():
 
 
 def _jpeg_decoders():
-    """按优先级列出可用的 JPEG 解码器:硬件在前,软件兜底。"""
+    """按优先级列出可用的 JPEG 解码器:稳定与色度(YUV 4:2:2)兼容在前。"""
     return tuple(
         name
         for name in (
             "v4l2sljpegdec",
-            "nvjpegdec",
             "vaapijpegdec",
             "jpegdec",
             "avdec_mjpeg",
+            "nvjpegdec",
         )
         if _element_available(name)
     )
@@ -78,11 +84,14 @@ def _jetson_mjpeg_chain(output_format="BGRx"):
     return f"jpegparse ! nvv4l2decoder mjpeg=1 ! nvvidconv ! video/x-raw,format={output_format} ! "
 
 
-def build_gstreamer_pipeline(device, mode, use_io_mode=True):
+def build_gstreamer_pipeline(device, mode, use_io_mode=True, decoder=None):
+    if not HAS_GSTREAMER:
+        raise RuntimeError("当前系统未安装或不可用 GStreamer")
     fmt = normalize_format(mode.pixel_format)
     decoder_chain = ""
     if fmt == "MJPG":
-        decoder = "nvv4l2decoder" if _jetson_mjpeg_available() else _jpeg_decoder()
+        if decoder is None:
+            decoder = "nvv4l2decoder" if _jetson_mjpeg_available() else _jpeg_decoder()
         if decoder is None:
             raise RuntimeError("找不到可用的 GStreamer JPEG 解码器")
         decoder_chain = _jpeg_decoder_chain(decoder, "BGR")
@@ -97,6 +106,8 @@ def build_gstreamer_pipeline(device, mode, use_io_mode=True):
 
 
 def build_native_gstreamer_pipeline(device, mode):
+    if not HAS_GSTREAMER:
+        raise RuntimeError("当前系统未安装或不可用 GStreamer")
     if normalize_format(mode.pixel_format) != "MJPG":
         raise ValueError("原生高帧率 GStreamer 采集仅支持 MJPG")
     return (
@@ -106,11 +117,14 @@ def build_native_gstreamer_pipeline(device, mode):
     )
 
 
-def build_high_fps_preview_pipeline(device, mode):
+def build_high_fps_preview_pipeline(device, mode, decoder=None):
     """高帧率 MJPG 的原生 appsink 管线,源端命名为 cambenchsrc 供统计用。"""
+    if not HAS_GSTREAMER:
+        raise RuntimeError("当前系统未安装或不可用 GStreamer")
     if normalize_format(mode.pixel_format) != "MJPG":
         raise ValueError("高帧率预览管线仅支持 MJPG")
-    decoder = "nvv4l2decoder" if _jetson_mjpeg_available() else _jpeg_decoder()
+    if decoder is None:
+        decoder = "nvv4l2decoder" if _jetson_mjpeg_available() else _jpeg_decoder()
     if decoder is None:
         raise RuntimeError("找不到可用的 GStreamer JPEG 解码器")
 

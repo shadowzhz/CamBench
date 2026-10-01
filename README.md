@@ -1,16 +1,23 @@
 # CamBench
 
-CamBench 是一个面向 Linux V4L2 摄像头的实时 FPS 测试与预览工具。项目使用 Python、Tkinter、OpenCV、GStreamer 和 `v4l2-ctl`，用于枚举摄像头、读取支持的分辨率/帧率模式，并观察实际采集 FPS。
+CamBench 是一个面向 Windows 和 Linux 的跨平台摄像头实时 FPS 测试与预览诊断工具。项目使用 Python、Tkinter、OpenCV、GStreamer（Linux）与 DirectShow / MediaFoundation（Windows），用于枚举摄像头、配置分辨率/帧率模式，并观察实际采集 FPS。
 
 ## 功能
 
-- 自动扫描 `/dev/video*` 摄像头设备。
+- **跨平台支持**：支持 Linux (V4L2 / GStreamer) 与 Windows (DirectShow / MediaFoundation)。
+- **即插即用（热插拔自动感知）**：后台自动监听摄像头插入与拔出事件（Linux 支持 `pyudev` netlink 监听与 sysfs 轮询；Windows 支持设备动态跟踪），插入新设备时自动识别并装载，无需重启软件；同时提供「🔄 刷新」按钮备用。
+- **分级模式选择**：采用「编码格式 -> 分辨率 -> 目标帧率」三级联动选择器，清晰直观，告别混乱冗长的模式列表。
+- **硬件能力清单一览**：点击「📋 硬件能力清单」可打开全量参数矩阵表格，一眼看全相机硬件支持的所有格式、离散分辨率与最高/全量帧率组合，双击任意行即可直接装载。
+- **即选即切（无感切换）**：在画面预览运行中任意切换格式、分辨率或帧率时，系统自动平滑重启采集管线，无需用户反复手动启停。
+- 自动扫描可用摄像头：Linux 扫描 `/dev/video*` 并智能合并物理节点；Windows 自动探测设备索引并结合 PowerShell 获取设备名称。
 - 使用 V4L2 能力信息过滤非 Video Capture 节点，并合并同一物理摄像头的多个节点。
 - 优先通过 V4L2 ioctl（`VIDIOC_ENUM_FMT` / `ENUM_FRAMESIZES` / `ENUM_FRAMEINTERVALS`）直接枚举像素格式、分辨率和 FPS 模式，不依赖 `v4l2-ctl`；ioctl 不可用时回退到解析 `v4l2-ctl --list-formats-ext` 文本。
 - 支持 MJPG、YUYV、YUY2 模式。
 - 显示请求分辨率、实际分辨率、目标 FPS、实时 FPS、平均 FPS、帧数和运行时间。
 - 实测 FPS 持续低于标称值时，GUI 自动给出"跑不满"提示。
-- 内置诊断功能：USB 总线速度（sysfs）、自动曝光状态（含切换手动曝光的命令）、内核日志中的 uvcvideo 带宽告警。
+- 内置诊断功能：
+  - **Linux**：USB 总线速度（sysfs）、自动曝光状态（含切换手动曝光的命令）、内核日志中的 uvcvideo 带宽告警。
+  - **Windows**：自动曝光低光补偿建议、USB 3.0/2.0 链路建议及主机控制器探测。
 - MJPG 在较高帧率/分辨率场景下优先使用 GStreamer，降低 OpenCV 内部 JPEG 解码造成的性能瓶颈。
 - 对 MJPG `>=120 FPS` 模式使用原生 GStreamer appsink 路径，并在 `v4l2src` 输出端统计源 FPS。
 - GStreamer 可根据系统环境使用 Jetson `nvv4l2decoder` / `nvvidconv` 或软件 JPEG 解码器。
@@ -31,19 +38,7 @@ CamBench/
 
 ## 环境要求
 
-当前项目主要面向 Linux / Jetson V4L2 摄像头环境。
-
-建议安装：
-
-- Python 3
-- Tkinter
-- OpenCV (`cv2`)
-- NumPy
-- PyGObject / GStreamer Python bindings (`gi`)
-- GStreamer 1.0
-- `v4l2-ctl`（用于枚举设备能力和模式）
-
-Ubuntu/Debian 示例：
+### Linux (Ubuntu/Debian 示例)
 
 ```bash
 sudo apt install python3-tk python3-opencv python3-numpy \
@@ -53,8 +48,14 @@ sudo apt install python3-tk python3-opencv python3-numpy \
     gstreamer1.0-libav
 ```
 
-实际所需 GStreamer 插件取决于摄像头输出格式以及平台。Jetson 环境还可使用 NVIDIA 提供的硬件 JPEG 解码链。
+### Windows
 
+建议安装 Python 3.8+ 并通过 pip 安装：
+
+```bash
+pip install opencv-python numpy
+```
+*注：Tkinter 通常已随官方 Windows Python 安装包一同安装。*
 ## 运行
 
 在仓库根目录执行：

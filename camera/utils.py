@@ -13,7 +13,12 @@ def normalize_format(pixel_format):
 
 
 def device_sort_key(path):
-    match = re.search(r"video(\d+)$", path)
+    if isinstance(path, int):
+        return path
+    str_path = str(path)
+    if str_path.isdigit():
+        return int(str_path)
+    match = re.search(r"video(\d+)$", str_path)
     return int(match.group(1)) if match else 9999
 
 
@@ -73,4 +78,7 @@ def is_video_capture_node(text):
 
 
 def camera_device_present(camera):
+    import sys
+    if sys.platform.startswith("win"):
+        return True
     return any(os.path.exists(device) for device in camera.device_candidates)

@@ -7,8 +7,13 @@ V4L2 ioctl 直接枚举。
 """
 
 import ctypes
-import fcntl
 import os
+import sys
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 
 _IOC_NRBITS = 8
@@ -188,14 +193,30 @@ class DeviceCapability:
         )
 
 
+_OPEN_FLAGS = os.O_RDWR
+if hasattr(os, "O_CLOEXEC"):
+    _OPEN_FLAGS |= os.O_CLOEXEC
+if hasattr(os, "O_NONBLOCK"):
+    _OPEN_FLAGS |= os.O_NONBLOCK
+
+
 def _open_device(path):
     return os.open(
         path,
-        os.O_RDWR | os.O_CLOEXEC | os.O_NONBLOCK,
+        _OPEN_FLAGS,
     )
 
 
+def _close_device(fd):
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 def _call_ioctl(fd, request, buffer):
+    if fcntl is None:
+        raise OSError("fcntl is not available on this platform")
     fcntl.ioctl(fd, request, buffer, True)
 
 
@@ -218,10 +239,7 @@ def query_capability(device):
     except OSError:
         return None
     finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+        _close_device(fd)
 
 
 def is_capture_device(device):
@@ -334,7 +352,4 @@ def enumerate_device_modes(device):
 
         return []
     finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+        _close_device(fd)

@@ -14,6 +14,13 @@ def setup_style():
     style.configure("Panel.TLabel", background="#ffffff", font=("Arial", 10))
     style.configure("Title.TLabel", background="#ffffff", font=("Arial", 14, "bold"))
     style.configure("Status.TLabel", background="#f3f4f6", foreground="#374151")
+    style.configure("StatKey.TLabel", font=("Arial", 9), foreground="#555555")
+    style.configure("StatVal.TLabel", font=("Arial", 9, "bold"), foreground="#111827")
+    style.configure(
+        "StatValHighlight.TLabel",
+        font=("Arial", 9, "bold"),
+        foreground="#16a34a",
+    )
     style.configure(
         "Hint.TLabel",
         background="#ffffff",

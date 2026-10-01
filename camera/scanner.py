@@ -1,5 +1,6 @@
 import glob
 import shutil
+import sys
 
 from camera import v4l2_io
 from camera.models import CameraInfo
@@ -11,6 +12,7 @@ from camera.utils import (
     run_cmd,
 )
 from core import log
+from camera.windows_backend import scan_windows_cameras
 
 
 def scan_cameras():
@@ -20,6 +22,9 @@ def scan_cameras():
     - 用 v4l2-ctl(优先)或 ioctl 过滤掉元数据等非采集节点;
     - 同一物理摄像头(card+bus 相同)的多个节点合并到一条记录。
     """
+    if sys.platform.startswith("win"):
+        return scan_windows_cameras()
+
     devices = sorted(glob.glob("/dev/video*"), key=device_sort_key)
     if not devices:
         log("scan: no /dev/video devices")

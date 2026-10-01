@@ -1,23 +1,49 @@
+"""
+底层视频采集后端抽象与适配模块。
+
+【多后端架构与选型策略】
+1. 高帧率 MJPG (FPS >= 120):
+   - 优先使用 NativeGStreamerCapture (原生 GStreamer 管道);
+   - 在 v4l2src 的 src pad 上挂载 GStreamer Pad Probe，直接统计到达的硬件 Buffer 时间戳，
+     获取绝对纯净的驱动层硬件源端 FPS，完全剔除解码和 GUI 造成的测量干扰。
+2. 常见 MJPG (FPS >= 30):
+   - 优先使用 GStreamer (带 jpegparse / jpegdec 或硬件加速解码 nvv4l2decoder);
+   - 避免 OpenCV 内部单线程 libjpeg 软解成为吞吐瓶颈(很多 1080P/60FPS 摄像头在 OpenCV 原生下只能读出 20~30FPS)。
+3. YUYV / YUY2 或其它无损格式:
+   - 优先使用 OpenCV 原生 V4L2 / DirectShow (零额外解码开销，直接内存复制)。
+4. Windows 平台:
+   - 优先通过 cv2.CAP_DSHOW (DirectShow) 打开，支持 CAP_PROP_BUFFERSIZE=1 极低延迟，
+     备用 cv2.CAP_MSMF (MediaFoundation)。
+"""
+
 import threading
+import sys
 import time
 from collections import deque
 
 import cv2
-import gi
 import numpy as np
 
-gi.require_version("Gst", "1.0")
-from gi.repository import Gst
+try:
+    import gi
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+    Gst.init(None)
+    HAS_GSTREAMER = True
+except (ImportError, ValueError, Exception):
+    Gst = None
+    HAS_GSTREAMER = False
 
 from camera.pipeline import (
     build_gstreamer_pipeline,
     build_high_fps_preview_pipeline,
     build_native_gstreamer_pipeline,
+    _jpeg_decoders,
+    _jetson_mjpeg_available,
 )
 from camera.utils import normalize_format
 from core import log
 
-Gst.init(None)
 
 # 源端 FPS 统计窗口(帧):窗口内算瞬时帧率,1000 帧足够平滑
 SOURCE_FPS_WINDOW = 1000
@@ -69,7 +95,7 @@ def configure_v4l2(cap, mode):
         "accepted": (
             int(round(actual_width)) == mode.width
             and int(round(actual_height)) == mode.height
-            and _close_enough(actual_fps, mode.fps)
+            and (actual_fps <= 0 or _close_enough(actual_fps, mode.fps))
         ),
     }
 
@@ -206,42 +232,51 @@ class HighFpsGStreamerCapture(NativeGStreamerCapture):
 
 
 def open_high_fps_gstreamer_capture(camera, mode, errors, stop_event=None):
+    if not HAS_GSTREAMER:
+        errors.append("当前系统未安装或不可用 GStreamer")
+        return None, "", None, ""
+    decoders = ("nvv4l2decoder",) if _jetson_mjpeg_available() else _jpeg_decoders()
     for device in camera.device_candidates:
-        if stop_event and stop_event.is_set():
-            return None, "", None, ""
-        pipeline = None
-        cap = None
-        try:
-            description = build_high_fps_preview_pipeline(device, mode)
-            log(f"GStreamer 高帧率管线: {description}")
-            pipeline = Gst.parse_launch(description)
-            channels = 4 if "format=BGRx" in description else 3
-            cap = HighFpsGStreamerCapture(pipeline, mode.width, mode.height, channels=channels)
-            cap.start()
-            frame = read_first_frame(cap, stop_event=stop_event)
-            if frame is not None:
-                # 首帧只用于确认管线和图像尺寸,不作为正式测速数据。
-                cap.reset_source_stats()
-                log(
-                    f"capture backend=GStreamer-high-FPS device={device} "
-                    f"mode={mode.width}x{mode.height}@{mode.fps:g} "
-                    f"{normalize_format(mode.pixel_format)} "
-                    f"actual={frame.shape[1]}x{frame.shape[0]}"
-                )
-                return cap, f"GStreamer high-FPS {device}", frame, device
-            error = cap.poll_error()
-            errors.append(f"GStreamer 高帧率 {device}: {error or '无画面'}")
-            cap.release()
-        except Exception as exc:
-            errors.append(f"GStreamer 高帧率 {device}: {exc}")
-            if cap is not None:
+        for decoder in decoders:
+            if stop_event and stop_event.is_set():
+                return None, "", None, ""
+            pipeline = None
+            cap = None
+            try:
+                description = build_high_fps_preview_pipeline(device, mode, decoder=decoder)
+                log(f"GStreamer 高帧率管线 (decoder={decoder}): {description}")
+                pipeline = Gst.parse_launch(description)
+                channels = 4 if "format=BGRx" in description else 3
+                cap = HighFpsGStreamerCapture(pipeline, mode.width, mode.height, channels=channels)
+                cap.start()
+                frame = read_first_frame(cap, stop_event=stop_event)
+                if frame is not None:
+                    # 首帧只用于确认管线和图像尺寸,不作为正式测速数据。
+                    cap.reset_source_stats()
+                    log(
+                        f"capture backend=GStreamer-high-FPS device={device} "
+                        f"mode={mode.width}x{mode.height}@{mode.fps:g} "
+                        f"{normalize_format(mode.pixel_format)} "
+                        f"decoder={decoder} "
+                        f"actual={frame.shape[1]}x{frame.shape[0]}"
+                    )
+                    return cap, f"GStreamer high-FPS {device}", frame, device
+                error = cap.poll_error()
+                errors.append(f"GStreamer 高帧率 {device} ({decoder}): {error or '无画面'}")
                 cap.release()
-            elif pipeline is not None:
-                pipeline.set_state(Gst.State.NULL)
+            except Exception as exc:
+                errors.append(f"GStreamer 高帧率 {device} ({decoder}): {exc}")
+                if cap is not None:
+                    cap.release()
+                elif pipeline is not None:
+                    pipeline.set_state(Gst.State.NULL)
     return None, "", None, ""
 
 
 def open_native_gstreamer_capture(camera, mode, errors, stop_event=None):
+    if not HAS_GSTREAMER:
+        errors.append("当前系统未安装或不可用 GStreamer")
+        return None, "", None, ""
     for device in camera.device_candidates:
         if stop_event and stop_event.is_set():
             return None, "", None, ""
@@ -272,34 +307,44 @@ def open_native_gstreamer_capture(camera, mode, errors, stop_event=None):
 
 def open_gstreamer_capture(camera, mode, errors, stop_event=None):
     """经 OpenCV 的 GStreamer 后端采集(管线字符串由 pipeline 模块给出)。"""
+    if not HAS_GSTREAMER:
+        errors.append("当前系统未安装或不可用 GStreamer")
+        return None, "", None, ""
+    fmt = normalize_format(mode.pixel_format)
+    if fmt == "MJPG":
+        decoders = ("nvv4l2decoder",) if _jetson_mjpeg_available() else _jpeg_decoders()
+    else:
+        decoders = (None,)
     for device in camera.device_candidates:
-        for io_mode in (True, False):
-            if stop_event and stop_event.is_set():
-                return None, "", None, ""
-            try:
-                pipeline = build_gstreamer_pipeline(device, mode, io_mode)
-                cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-            except Exception as exc:
-                errors.append(f"GStreamer {device}: {exc}")
-                continue
+        for decoder in decoders:
+            for io_mode in (True, False):
+                if stop_event and stop_event.is_set():
+                    return None, "", None, ""
+                try:
+                    pipeline = build_gstreamer_pipeline(device, mode, io_mode, decoder=decoder)
+                    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+                except Exception as exc:
+                    errors.append(f"GStreamer {device} ({decoder}): {exc}")
+                    continue
 
-            label = f"GStreamer {device}"
-            if not cap.isOpened():
-                errors.append(f"{label}: 打开失败")
+                label = f"GStreamer {device}"
+                if not cap.isOpened():
+                    errors.append(f"{label} ({decoder}): 打开失败")
+                    cap.release()
+                    continue
+
+                frame = read_first_frame(cap, stop_event=stop_event)
+                if frame is not None:
+                    log(
+                        f"capture backend=GStreamer device={device} "
+                        f"mode={mode.width}x{mode.height}@{mode.fps:g} "
+                        f"{normalize_format(mode.pixel_format)} "
+                        f"decoder={decoder} "
+                        f"actual={frame.shape[1]}x{frame.shape[0]}"
+                    )
+                    return cap, label, frame, device
+                errors.append(f"{label} ({decoder}): 无画面")
                 cap.release()
-                continue
-
-            frame = read_first_frame(cap, stop_event=stop_event)
-            if frame is not None:
-                log(
-                    f"capture backend=GStreamer device={device} "
-                    f"mode={mode.width}x{mode.height}@{mode.fps:g} "
-                    f"{normalize_format(mode.pixel_format)} "
-                    f"actual={frame.shape[1]}x{frame.shape[0]}"
-                )
-                return cap, label, frame, device
-            errors.append(f"{label}: 无画面")
-            cap.release()
     return None, "", None, ""
 
 
@@ -337,6 +382,51 @@ def open_v4l2_capture(camera, mode, errors, stop_event=None):
     return None, "", None, ""
 
 
+def open_windows_capture(camera, mode, errors, stop_event=None):
+    for device in camera.device_candidates:
+        if stop_event and stop_event.is_set():
+            return None, "", None, ""
+        try:
+            dev_id = int(device)
+        except ValueError:
+            dev_id = device
+
+        for api_backend, api_name in (
+            (cv2.CAP_DSHOW, "DirectShow"),
+            (cv2.CAP_MSMF, "MediaFoundation"),
+        ):
+            if stop_event and stop_event.is_set():
+                return None, "", None, ""
+            cap = cv2.VideoCapture(dev_id, api_backend)
+            if not cap.isOpened():
+                errors.append(f"{api_name} {device}: 打开失败")
+                cap.release()
+                continue
+
+            negotiated = configure_v4l2(cap, mode)
+            if not negotiated["accepted"]:
+                errors.append(
+                    f"{api_name} {device}: 模式被拒绝 "
+                    f"请求={mode.width}x{mode.height}@{mode.fps:.2f}, "
+                    f"实际={negotiated['width']:.0f}x{negotiated['height']:.0f}@{negotiated['fps']:.2f}"
+                )
+                cap.release()
+                continue
+
+            frame = read_first_frame(cap, stop_event=stop_event)
+            if frame is not None:
+                log(
+                    f"capture backend={api_name} device={device} "
+                    f"mode={mode.width}x{mode.height}@{mode.fps:g} "
+                    f"{normalize_format(mode.pixel_format)} "
+                    f"actual={negotiated['width']:.0f}x{negotiated['height']:.0f}@{negotiated['fps']:.2f}"
+                )
+                return cap, f"{api_name} {device}", frame, str(device)
+            errors.append(f"{api_name} {device}: 无画面")
+            cap.release()
+    return None, "", None, ""
+
+
 def open_capture(camera, mode, stop_event=None):
     """
     按模式选择采集后端,返回 (cap, backend, 首帧, device, errors)。
@@ -349,6 +439,16 @@ def open_capture(camera, mode, stop_event=None):
     """
     errors = []
     fmt = normalize_format(mode.pixel_format)
+
+    if sys.platform.startswith("win"):
+        result = open_windows_capture(camera, mode, errors, stop_event)
+        if result[0]:
+            return (*result, errors)
+        if HAS_GSTREAMER:
+            result = open_gstreamer_capture(camera, mode, errors, stop_event)
+            if result[0]:
+                return (*result, errors)
+        return None, "", None, "", errors
 
     if fmt == "MJPG" and mode.fps >= 120:
         result = open_high_fps_gstreamer_capture(camera, mode, errors, stop_event)

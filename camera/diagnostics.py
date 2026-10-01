@@ -9,6 +9,7 @@
 
 import os
 import re
+import sys
 
 from camera.utils import run_cmd
 
@@ -147,6 +148,10 @@ def kernel_uvcvideo_warnings():
 
 def diagnose_camera(camera, mode=None):
     """生成针对指定相机(和可选模式)的诊断报告文本。"""
+    if sys.platform.startswith("win"):
+        from camera.windows_backend import diagnose_windows_camera
+        return diagnose_windows_camera(camera, mode)
+
     lines = [
         f"设备: {camera.device}   ({camera.name})"
     ]
@@ -183,6 +188,15 @@ def diagnose_camera(camera, mode=None):
             lines.append(
                 f"  v4l2-ctl -d {camera.device} --set-ctrl={name}=1"
             )
+
+    # 检查是否开启了曝光动态降帧 (exposure_dynamic_framerate)
+    dyn_fps_val = run_cmd(["v4l2-ctl", "-d", camera.device, "--get-ctrl=exposure_dynamic_framerate"])
+    if "exposure_dynamic_framerate: 1" in dyn_fps_val:
+        lines.append(
+            "动态降帧: exposure_dynamic_framerate=1 (开启)\n"
+            "提示: 固件在弱光下会主动降低帧率以加长曝光时间。关闭该选项可强制拉满帧率:\n"
+            f"  v4l2-ctl -d {camera.device} --set-ctrl=exposure_dynamic_framerate=0"
+        )
 
     warnings = kernel_uvcvideo_warnings()
 
