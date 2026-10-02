@@ -2,7 +2,10 @@ import unittest
 from unittest.mock import patch
 
 from camera.diagnostics import (
+    check_device_busy,
+    check_device_permission,
     diagnose_camera,
+    diagnose_open_failure,
     read_exposure_state,
     speed_label,
     uvcvideo_bandwidth_warnings,
@@ -128,6 +131,60 @@ class DiagnoseCameraTests(unittest.TestCase):
         self.assertIn("/dev/video0", report)
         self.assertIn("未知", report)
         self.assertIn("无法读取", report)
+
+
+class DiagnoseOpenFailureTests(unittest.TestCase):
+    @patch("camera.diagnostics.check_device_permission", return_value=False)
+    def test_permission_denied_diagnosis(self, _mock_perm):
+        cam = CameraInfo("/dev/video2", "TestCam", "usb", ())
+        mode = CameraMode("MJPG", 1280, 720, 30.0)
+        diag = diagnose_open_failure(cam, mode, ["OpenCV V4L2 /dev/video2: 打开失败"])
+        self.assertIn("权限不足", diag)
+        self.assertIn("video", diag)
+
+    @patch("camera.diagnostics.check_device_permission", return_value=True)
+    @patch("camera.diagnostics.check_device_busy", return_value=[("1234", "obs")])
+    def test_device_busy_diagnosis(self, _mock_busy, _mock_perm):
+        cam = CameraInfo("/dev/video2", "TestCam", "usb", ())
+        mode = CameraMode("MJPG", 1280, 720, 30.0)
+        diag = diagnose_open_failure(cam, mode, ["OpenCV V4L2 /dev/video2: 打开失败"])
+        self.assertIn("正被其他软件占用", diag)
+        self.assertIn("obs(PID 1234)", diag)
+
+    @patch("camera.diagnostics.check_device_permission", return_value=True)
+    @patch("camera.diagnostics.check_device_busy", return_value=[])
+    @patch("camera.diagnostics.usb_speed", return_value=("480", "USB 2.0 High-Speed (480 Mbps)"))
+    @patch("camera.diagnostics.kernel_uvcvideo_warnings", return_value=["uvcvideo: not enough bandwidth"])
+    def test_bandwidth_overload_yuy2_diagnosis(self, _mock_warn, _mock_usb, _mock_busy, _mock_perm):
+        cam = CameraInfo("/dev/video2", "USB Camera (046d:0825)", "usb", ())
+        mode = CameraMode("YUY2", 1280, 720, 10.0)
+        diag = diagnose_open_failure(cam, mode, ["OpenCV V4L2 /dev/video2: 无画面"])
+        self.assertIn("USB 物理总线带宽超限", diag)
+        self.assertIn("YUY2", diag)
+        self.assertIn("MJPG", diag)
+        self.assertIn("罗技固件缺陷", diag)
+
+    @patch("camera.diagnostics.check_device_permission", return_value=True)
+    @patch("camera.diagnostics.check_device_busy", return_value=[])
+    @patch("camera.diagnostics.usb_speed", return_value=("5000", "USB 3.x SuperSpeed (5 Gbps)"))
+    @patch("camera.diagnostics.kernel_uvcvideo_warnings", return_value=[])
+    def test_mode_rejected_diagnosis(self, _mock_warn, _mock_usb, _mock_busy, _mock_perm):
+        cam = CameraInfo("/dev/video2", "GenericCam", "usb", ())
+        mode = CameraMode("MJPG", 3840, 2160, 60.0)
+        diag = diagnose_open_failure(cam, mode, ["OpenCV V4L2 /dev/video2: 模式被拒绝 请求=3840x2160@60.00"])
+        self.assertIn("硬件驱动拒绝了当前采集模式", diag)
+        self.assertIn("3840x2160", diag)
+
+    @patch("camera.diagnostics.check_device_permission", return_value=True)
+    @patch("camera.diagnostics.check_device_busy", return_value=[])
+    @patch("camera.diagnostics.usb_speed", return_value=("5000", "USB 3.x SuperSpeed (5 Gbps)"))
+    @patch("camera.diagnostics.kernel_uvcvideo_warnings", return_value=[])
+    def test_no_frame_timeout_diagnosis(self, _mock_warn, _mock_usb, _mock_busy, _mock_perm):
+        cam = CameraInfo("/dev/video2", "GenericCam", "usb", ())
+        mode = CameraMode("MJPG", 1280, 720, 30.0)
+        diag = diagnose_open_failure(cam, mode, ["OpenCV V4L2 /dev/video2: 无画面"])
+        self.assertIn("未输出有效画面", diag)
+        self.assertIn("抓帧超时", diag)
 
 
 if __name__ == "__main__":

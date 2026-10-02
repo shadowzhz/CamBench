@@ -384,7 +384,10 @@ class CameraFpsApp:
                 elif event.type == EventType.STATS:
                     latest_stats = event.data
                 elif event.type == EventType.ERROR:
-                    messagebox.showerror("错误", event.message)
+                    self.stop_camera()
+                    self.preview.configure(image="", text="打开相机失败")
+                    self.hint_var.set("打开相机失败，详情见弹窗")
+                    messagebox.showerror("打开相机失败", event.message)
                 elif event.type == EventType.DIAGNOSTICS:
                     messagebox.showinfo("诊断结果", event.message)
                 elif event.type == EventType.DEVICES_CHANGED:

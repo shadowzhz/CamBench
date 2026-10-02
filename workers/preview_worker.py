@@ -4,6 +4,7 @@ import time
 from collections import deque
 
 from camera.capture import HighFpsGStreamerCapture, open_capture
+from camera.diagnostics import diagnose_open_failure
 from camera.fps import FpsMeter
 from camera.utils import camera_device_present
 from core import (
@@ -91,7 +92,8 @@ class PreviewWorker(BaseWorker):
                 self.camera, self.mode, self.stop_event
             )
             if cap is None:
-                self.put_event(make_error_event("\n".join(errors)))
+                detailed_error = diagnose_open_failure(self.camera, self.mode, errors)
+                self.put_event(make_error_event(detailed_error))
                 return
 
             self.cap = cap
