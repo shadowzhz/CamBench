@@ -1,26 +1,33 @@
-# CamBench
+# CamBench 📷
 
-CamBench 是一个面向 Linux 与 Windows 的轻量级跨平台摄像头实时采集、帧率（FPS）评测与硬件能力诊断工具。基于 Python、Tkinter 与 OpenCV 构建，在 Linux 深度集成 V4L2 原生 ioctl 与 GStreamer 硬件/多线程解码管线，在 Windows 支持 DirectShow 与 MediaFoundation 双后端。
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.8+-3776AB.svg?logo=python&logoColor=white" alt="Python 3.8+">
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-blue.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/Backends-V4L2%20%7C%20GStreamer%20%7C%20DirectShow-brightgreen.svg" alt="Backends">
+  <img src="https://img.shields.io/badge/Tests-49%20Passed-success.svg" alt="Tests: 49 Passed">
+  <img src="https://img.shields.io/badge/UI-Tkinter-orange.svg" alt="UI: Tkinter">
+</p>
 
-用于解决 UVC 摄像头实际采集帧率与厂商标称不符、模式参数不透明、高分辨率/高帧率掉帧以及硬件瓶颈定位困难等实际问题。
-
----
-
-## 为什么使用 CamBench？
-
-- **实测真帧率，拒绝显示端限速**：采集工作线程与 GUI 预览完全解耦。对于 `>=120 FPS` 的超高帧率模式，直接在 GStreamer `v4l2src` 源端统计瞬时与累计帧率，不被界面刷新率（30 FPS）拖慢。
-- **硬件能力全景矩阵**：一键打开「📋 硬件能力清单」，支持按格式、分辨率、帧率多列排序，双击任意一行立即装载。
-- **三级联动与无感热切换**：「编码格式 -> 分辨率 -> 目标帧率」分级联动筛选；在画面预览运行中修改参数，系统自动平滑重启采集管线，无需反复启停。
-- **热插拔自动感知**：后台监听硬件事件（Linux 支持 `pyudev` netlink 与 sysfs 轮询；Windows 动态检测设备拓扑），设备插入自动识别装载，意外拔出安全防护并弹窗提醒。
-- **一键硬件瓶颈诊断**：实测 FPS 偏低（<70% 标称帧率）自动触发警示，一键排查自动曝光长曝光限制、USB 2.0/3.0 接口带宽瓶颈与系统内核驱动告警。
+> **轻量级跨平台摄像头实时采集、真帧率（FPS）评测与硬件能力深度诊断工具。**  
+> 基于 Python、Tkinter 与 OpenCV 构建。Linux 端深度集成 V4L2 原生 ioctl 与 GStreamer 硬件/多线程解码管线；Windows 端支持 DirectShow 与 MediaFoundation 双后端。
 
 ---
 
-## 快速开始 (Quick Start)
+## ✨ 核心特性 (Features)
+
+- ⚡ **实测真帧率，拒绝显示端限速**：采集工作线程与 GUI 预览完全解耦。对于 `>=120 FPS` 的超高帧率模式，直接在 GStreamer `v4l2src` 源端统计瞬时与累计帧率，不被界面刷新率（30 FPS）拖慢。
+- 📋 **硬件能力全景矩阵**：一键打开「📋 硬件能力清单」，支持按格式、分辨率、帧率多列排序，双击任意一行立即装载。
+- 🔄 **三级联动与无感热切换**：「编码格式 -> 分辨率 -> 目标帧率」分级联动筛选；在画面预览运行中修改参数，系统自动平滑重启采集管线，无需反复启停。
+- 🔌 **热插拔自动感知**：后台监听硬件事件（Linux 支持 `pyudev` netlink 与 sysfs 轮询；Windows 动态检测设备拓扑），设备插入自动识别装载，意外拔出安全防护并弹窗提醒。
+- 🩺 **一键硬件瓶颈诊断**：实测 FPS 偏低（<70% 标称帧率）自动触发警示，一键排查自动曝光长曝光限制、USB 2.0/3.0 接口带宽瓶颈与系统内核驱动告警。
+
+---
+
+## ⚡ 快速开始 (Quick Start)
 
 ### 1. 安装依赖
 
-#### Linux (Ubuntu / Debian)
+#### 🐧 Linux (Ubuntu / Debian)
 
 ```bash
 sudo apt update && sudo apt install -y \
@@ -31,11 +38,11 @@ sudo apt update && sudo apt install -y \
     gstreamer1.0-libav
 ```
 
-> **说明**：
+> **依赖说明**：
 > - `python3-pyudev` 用于提供即时 netlink 热插拔感知（未安装时会自动降级为 sysfs 轮询）。
 > - `v4l-utils` 提供 `v4l2-ctl` 工具与节点过滤辅助（未安装时优先通过 V4L2 原生 ioctl 枚举）。
 
-#### Windows
+#### 🪟 Windows
 
 需要 Python 3.8+（官方安装包默认已包含 Tkinter）：
 
@@ -59,7 +66,7 @@ python main.py
 
 ---
 
-## 使用指南
+## 🖥️ 使用指南 (Usage)
 
 ### 典型操作流程
 
@@ -99,7 +106,7 @@ python main.py
 
 ---
 
-## 系统配置说明
+## ⚙️ 系统配置 (Configuration)
 
 系统核心配置定义在 `core.py` 中，用户可按需微调常量：
 
@@ -116,7 +123,7 @@ python main.py
 
 ---
 
-## 采集后端策略与架构设计
+## 🧩 架构与采集策略 (Architecture)
 
 ### 采集链路架构
 
@@ -152,7 +159,7 @@ flowchart TD
 
 ---
 
-## 诊断与排查 (Troubleshooting)
+## 🛠️ 故障排查 (Troubleshooting)
 
 当实测 FPS 明显低于相机标称参数时，通常由以下三个物理或配置原因引起：
 
@@ -186,7 +193,7 @@ flowchart TD
 
 ---
 
-## 项目结构
+## 📁 项目结构 (Project Structure)
 
 ```text
 CamBench/
@@ -222,7 +229,7 @@ CamBench/
 
 ---
 
-## 单元测试
+## 🧪 单元测试 (Testing)
 
 项目内置完整的单元测试覆盖（包括模式枚举、FPS 计量、设备监控、V4L2 解析与 Windows 后端等）：
 
@@ -232,6 +239,6 @@ python3 -m unittest discover -s tests
 
 ---
 
-## 许可证
+## 📄 开源许可证与协议 (License)
 
 本项目代码目前未附加开放源代码许可证。请保留代码原作者署名，未经许可请勿默认作为可商用再分发项目。
